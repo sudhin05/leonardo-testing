@@ -1,26 +1,73 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+@theme {
+  --color-bg: #0b0c0f;
+  --color-panel: #121419;
+  --color-panel-2: #181b22;
+  --color-panel-3: #20242d;
+  --color-line: #262a34;
+  --color-line-2: #333845;
+  --color-ink: #e8eaf0;
+  --color-muted: #8b93a4;
+  --color-faint: #5d6474;
+  --color-accent: #8b6cff;
+  --color-accent-2: #b39dff;
+  --color-good: #34d399;
+  --color-bad: #f87171;
+  --color-warn: #fbbf24;
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html,
+body {
+  background: var(--color-bg);
+  color: var(--color-ink);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* checkerboard behind media so transparency / letterboxing is visible */
+.checker {
+  background-color: #15171c;
+  background-image:
+    linear-gradient(45deg, #1b1e24 25%, transparent 25%),
+    linear-gradient(-45deg, #1b1e24 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #1b1e24 75%),
+    linear-gradient(-45deg, transparent 75%, #1b1e24 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+}
+
+.shimmer {
+  background: linear-gradient(110deg, #16181e 30%, #222631 50%, #16181e 70%);
+  background-size: 200% 100%;
+  animation: shimmer 1.6s linear infinite;
+}
+@keyframes shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: #2a2e38;
+  border-radius: 8px;
+  border: 2px solid var(--color-bg);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+input,
+textarea,
+select {
+  color-scheme: dark;
 }
