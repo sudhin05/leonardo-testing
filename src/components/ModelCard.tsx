@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { AlertTriangle, Ban, Check, Clock, Coins, Loader2, Maximize2, RotateCw, Sparkles } from "lucide-react";
-import { ACTIVE, aspectCss, fmtMs, type Generation, type ModelInfo, type Output } from "@/lib/client";
+import { ACTIVE, aspectCss, fmtCost, fmtMs, type Generation, type ModelInfo, type Output } from "@/lib/client";
 import { ScoreControls } from "./ScoreControls";
 import { Media } from "./Lightbox";
 
@@ -123,8 +123,8 @@ export function ModelCard({
           <span className="flex items-center gap-1" title="Time from submit to completion">
             <Clock size={11} /> {fmtMs(gen.latency_ms)}
           </span>
-          <span className="flex items-center gap-1" title="API credits charged">
-            <Coins size={11} /> {gen.credit_cost ?? "—"}
+          <span className="flex items-center gap-1" title={fmtCost(gen.credit_cost, gen.cost_source).title}>
+            <Coins size={11} /> {fmtCost(gen.credit_cost, gen.cost_source).text}
           </span>
           {gen.width && (
             <span className="font-mono" title="Requested size">

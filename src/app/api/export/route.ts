@@ -8,7 +8,7 @@ export async function GET() {
   const rows = d
     .prepare(
       `SELECT p.test_id, p.ad_category, pr.sku, g.model_key AS model, g.id AS generation_id, o.id AS output_id, o.idx AS image_index,
-              g.status, g.mock, g.width, g.height, g.credit_cost,
+              g.status, g.mock, g.width, g.height, g.credit_cost AS cost_usd, g.cost_source, g.ref_image AS reference_image,
               CASE WHEN g.completed_at IS NOT NULL THEN g.completed_at - g.submitted_at END AS latency_ms,
               s.text_accuracy, s.realism, s.color AS brand_color, s.keep, s.notes,
               o.local_path, o.remote_url, r.prompt_text, g.created_at

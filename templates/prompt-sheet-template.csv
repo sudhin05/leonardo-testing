@@ -1,0 +1,4 @@
+test_id,category,prompt,ref_image,aspect_ratio,product,product_name,criteria,output
+T-01,Website thumbnail,"Transform the uploaded perfume bottle into a premium luxury product photograph. Preserve its exact bottle shape, label, colors and design. ...",perfume.jpeg,1:1,perfume,Coastal Eau de Parfum 50ml,Bottle shape and label unchanged; natural shadows,image
+T-02,Insta poster,"Create a stunning Instagram perfume advertisement using the uploaded bottle. ... Add stylish typography: ""YOUR SUMMER ESCAPE"". ...",perfume.jpeg,4:5,perfume,Coastal Eau de Parfum 50ml,Exact spelling of all text; product unchanged,image
+T-03,Insta story,"A vertical 9:16 promotional story for an EOFY sale with the headline ""EOFY FLASH SALE"" ...",,9:16,,,Text spelled exactly; brand colours #0A192F and #FFD700,image

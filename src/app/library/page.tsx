@@ -187,7 +187,7 @@ export default function LibraryPage() {
                 )}
                 <input
                   type="file"
-                  accept="image/png,image/jpeg,image/webp"
+                  accept="image/*,.avif,.heic"
                   className="hidden"
                   onChange={(e) => e.target.files?.[0] && uploadProductImage(p.id, e.target.files[0])}
                 />
@@ -379,57 +379,109 @@ function ProductForm({ draft, onCancel, onSave }: { draft: Partial<Product>; onC
   );
 }
 
+type ImportResult = { inserted: number; productsCreated: number; imagesSaved: number; warnings: string[] };
+
 function ImportDialog({ kind, onClose, onDone }: { kind: "prompts" | "products"; onClose: () => void; onDone: (msg: string) => void }) {
+  const [sheet, setSheet] = useState<File | null>(null);
+  const [images, setImages] = useState<File[]>([]);
   const [csv, setCsv] = useState("");
   const [replace, setReplace] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+
   const submit = async () => {
+    setBusy(true);
+    setErr("");
     try {
-      const r = await api<{ inserted: number; warnings: string[] }>("/api/import", { method: "POST", json: { kind, csv, replace } });
-      onDone(`Imported ${r.inserted} ${kind}.${r.warnings.length ? " " + r.warnings.join(" · ") : ""}`);
+      const fd = new FormData();
+      fd.append("kind", kind);
+      fd.append("replace", String(replace));
+      if (sheet) fd.append("sheet", sheet);
+      else fd.append("csv", csv);
+      for (const f of images) fd.append("images", f, f.name);
+      const r = await api<ImportResult>("/api/import", { method: "POST", body: fd });
+      onDone(
+        `Imported ${r.inserted} ${kind}, ${r.imagesSaved} reference image${r.imagesSaved === 1 ? "" : "s"}` +
+          (r.productsCreated && kind === "prompts" ? `, ${r.productsCreated} new product${r.productsCreated === 1 ? "" : "s"}` : "") +
+          "." +
+          (r.warnings.length ? " " + r.warnings.join(" · ") : ""),
+      );
     } catch (e) {
       setErr((e as Error).message);
+    } finally {
+      setBusy(false);
     }
   };
+
   return (
-    <Modal title={`Import ${kind} from CSV`} onClose={onClose}>
-      <p className="mb-3 text-sm text-muted">
+    <Modal title={`Import ${kind}`} onClose={onClose}>
+      <p className="mb-4 text-sm text-muted">
         {kind === "prompts" ? (
           <>
-            Headers are matched loosely: <code className="text-ink">Test ID, Ad Category, Target SKU, Prompt, What to Evaluate, Aspect Ratio</code>. Aspect
-            ratio is inferred from the text (e.g. “9:16”) if there&apos;s no column. Rows mentioning “[Input:” or inpainting become image-to-image. Import
-            products first so SKUs link up.
+            Use the standard template (<code className="text-ink">templates/prompt-sheet-template.xlsx</code>): columns{" "}
+            <code className="text-ink">test_id, category, prompt, ref_image, aspect_ratio, product, product_name, criteria, output</code>. Only{" "}
+            <code className="text-ink">prompt</code> is required. Put the images named in <code className="text-ink">ref_image</code> in one folder and select
+            them below; they&apos;re matched by file name.
           </>
         ) : (
           <>
-            Headers: <code className="text-ink">SKU, Name, Category, Notes</code>.
+            Columns: <code className="text-ink">sku, name, category, notes, ref_image</code>.
           </>
-        )}{" "}
-        From Excel/Sheets: <i>File → Download → CSV</i>, or copy the cells and paste below.
+        )}
       </p>
-      <label className="mb-3 flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-line-2 py-4 text-sm text-muted hover:border-accent hover:text-ink">
-        <Upload size={15} /> Choose .csv file
-        <input
-          type="file"
-          accept=".csv,.tsv,text/csv"
-          className="hidden"
-          onChange={async (e) => {
-            const f = e.target.files?.[0];
-            if (f) setCsv(await f.text());
-          }}
+
+      <div className="grid grid-cols-2 gap-3">
+        <label className="flex cursor-pointer flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-line-2 px-3 py-5 text-center text-sm text-muted hover:border-accent hover:text-ink">
+          <FileUp size={18} />
+          {sheet ? <span className="text-ink">{sheet.name}</span> : "1. Choose sheet (.xlsx or .csv)"}
+          <input type="file" accept=".xlsx,.xlsm,.csv,.tsv" className="hidden" onChange={(e) => setSheet(e.target.files?.[0] ?? null)} />
+        </label>
+        <label className="flex cursor-pointer flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-line-2 px-3 py-5 text-center text-sm text-muted hover:border-accent hover:text-ink">
+          <ImagePlus size={18} />
+          {images.length ? (
+            <span className="text-ink">
+              {images.length} image{images.length === 1 ? "" : "s"} selected
+            </span>
+          ) : (
+            "2. Choose reference images"
+          )}
+          <span className="text-[11px] text-faint">select all files in the images folder</span>
+          <input
+            type="file"
+            multiple
+            accept="image/*,.avif,.heic"
+            className="hidden"
+            onChange={(e) => setImages(Array.from(e.target.files ?? []))}
+          />
+        </label>
+      </div>
+      {images.length > 0 && <p className="mt-2 truncate text-[11px] text-faint">{images.map((i) => i.name).join(", ")}</p>}
+
+      {!sheet && (
+        <textarea
+          className={`${input} mt-3 font-mono text-xs`}
+          rows={4}
+          value={csv}
+          onChange={(e) => setCsv(e.target.value)}
+          placeholder="…or paste rows copied from Excel / Sheets here (first row = headers)"
         />
-      </label>
-      <textarea className={`${input} font-mono text-xs`} rows={8} value={csv} onChange={(e) => setCsv(e.target.value)} placeholder="…or paste CSV / tab-separated rows here (first row = headers)" />
+      )}
       <label className="mt-3 flex items-center gap-2 text-sm text-muted">
         <input type="checkbox" checked={replace} onChange={(e) => setReplace(e.target.checked)} className="accent-[#8b6cff]" />
-        Replace all existing {kind} (removes the example data{kind === "prompts" ? " and their generations" : ""})
+        Replace all existing {kind}
+        {kind === "prompts" ? " and products (deletes their generations and scores)" : ""}
       </label>
       {err && <p className="mt-2 text-sm text-bad">{err}</p>}
       <div className="mt-6 flex justify-end gap-2">
         <button onClick={onClose} className="rounded-lg px-4 py-2 text-sm text-muted hover:text-ink">
           Cancel
         </button>
-        <button disabled={!csv.trim()} onClick={submit} className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white disabled:opacity-40">
+        <button
+          disabled={(!sheet && !csv.trim()) || busy}
+          onClick={submit}
+          className="flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white disabled:opacity-40"
+        >
+          {busy && <Upload size={14} className="animate-pulse" />}
           Import
         </button>
       </div>

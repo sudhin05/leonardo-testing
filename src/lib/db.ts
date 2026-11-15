@@ -90,19 +90,44 @@ CREATE TABLE IF NOT EXISTS scores (
 );
 `;
 
-type G = typeof globalThis & { __labDb?: DatabaseSyncT };
+type G = typeof globalThis & { __labDb?: DatabaseSyncT; __labDbVersion?: number };
+
+/** Bump when migrate() changes, so a dev server holding an open connection re-runs it after hot reload. */
+const DB_VERSION = 2;
 
 export function db(): DatabaseSyncT {
   const g = globalThis as G;
-  if (g.__labDb) return g.__labDb;
+  if (g.__labDb) {
+    if (g.__labDbVersion !== DB_VERSION) {
+      g.__labDb.exec(SCHEMA);
+      migrate(g.__labDb);
+      g.__labDbVersion = DB_VERSION;
+    }
+    return g.__labDb;
+  }
   fs.mkdirSync(MEDIA_DIR, { recursive: true });
   fs.mkdirSync(UPLOAD_DIR, { recursive: true });
   const d = new DatabaseSync(path.join(DATA_DIR, "lab.db"));
   d.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
   d.exec(SCHEMA);
+  migrate(d);
   seedIfEmpty(d);
   g.__labDb = d;
+  g.__labDbVersion = DB_VERSION;
   return d;
+}
+
+/** Additive migrations for databases created by earlier versions. */
+function migrate(d: DatabaseSyncT) {
+  const addCol = (table: string, col: string, decl: string) => {
+    const cols = d.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+    if (!cols.some((c) => c.name === col)) d.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${decl}`);
+  };
+  addCol("generations", "ref_image", "TEXT"); // reference image actually sent with this generation
+  addCol("generations", "cost_source", "TEXT"); // api | measured | estimate
+  addCol("generations", "create_response", "TEXT"); // raw create response (debugging cost/ids)
+  addCol("prompts", "source", "TEXT DEFAULT ''"); // which sheet a prompt was imported from
+  d.exec(`CREATE TABLE IF NOT EXISTS balance_log (ts INTEGER PRIMARY KEY, balance REAL NOT NULL)`);
 }
 
 function seedIfEmpty(d: DatabaseSyncT) {

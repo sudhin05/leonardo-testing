@@ -9,7 +9,7 @@ export async function GET(req: Request) {
   if (!promptId) return bad("promptId required");
   const gens = d
     .prepare(
-      `SELECT g.id, g.run_id, g.model_key, g.status, g.error, g.credit_cost, g.width, g.height, g.mock,
+      `SELECT g.id, g.run_id, g.model_key, g.status, g.error, g.credit_cost, g.cost_source, g.ref_image, g.width, g.height, g.mock,
               g.created_at, g.submitted_at, g.completed_at, g.request, r.created_at AS run_created_at, r.quantity
        FROM generations g JOIN runs r ON r.id = g.run_id
        WHERE g.prompt_id = ? ORDER BY g.id DESC`,

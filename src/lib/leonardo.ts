@@ -54,10 +54,52 @@ export async function createGeneration(body: unknown): Promise<CreateResult> {
   const json = await readJson(res);
   const generationId = findKey(json, "generationId") ?? findKey(json, "id");
   if (typeof generationId !== "string") {
+    // Leonardo sometimes answers 200 with a GraphQL-style error list instead of an HTTP error
+    const msg = findKey(json, "message");
+    const code = findKey(json, "code");
+    if (typeof msg === "string") throw new Error(`Leonardo rejected the request${typeof code === "string" ? ` (${code})` : ""}: ${msg}`);
     throw new Error(`No generationId in response: ${JSON.stringify(json).slice(0, 500)}`);
   }
-  const cost = findKey(json, "apiCreditCost");
-  return { generationId, cost: typeof cost === "number" ? cost : null, raw: json };
+  return { generationId, cost: parseCost(json), raw: json };
+}
+
+/**
+ * API credits per US dollar on this account. Measured 2026-11-14: every balance drop (GET /v1/me) was
+ * 669 × the dollar cost Leonardo reported for that generation. Override with LEONARDO_CREDITS_PER_USD.
+ */
+export const CREDITS_PER_USD = Number(process.env.LEONARDO_CREDITS_PER_USD) || 669;
+
+/**
+ * Cost in USD as reported by Leonardo on create. Seen so far:
+ *   {"generate":{"apiCreditCost":null,"cost":{"amount":"0.0897","unit":"DOLLARS"}}}
+ * Credit-denominated values are converted to USD so every stored cost uses the same unit.
+ */
+function parseCost(json: unknown): number | null {
+  const cost = findKey(json, "cost") as { amount?: unknown; unit?: unknown } | undefined;
+  if (cost && typeof cost === "object" && cost.amount != null) {
+    const n = Number(cost.amount);
+    if (Number.isFinite(n) && n >= 0) return String(cost.unit).toUpperCase() === "CREDITS" ? n / CREDITS_PER_USD : n;
+  }
+  const credits = Number(findKey(json, "apiCreditCost") ?? NaN);
+  if (Number.isFinite(credits) && credits >= 0) return credits / CREDITS_PER_USD;
+  return null;
+}
+
+/** Remaining API credits on the account (GET /v1/me → apiPaidTokens + apiSubscriptionTokens). */
+export async function getBalance(): Promise<number | null> {
+  if (isMock()) return null;
+  try {
+    const res = await fetch(`${BASE}/v1/me`, { headers: headers(false) });
+    const json = await readJson(res);
+    const u = (json.user_details as Record<string, unknown>[] | undefined)?.[0];
+    if (!u) return null;
+    const paid = Number(u.apiPaidTokens ?? 0);
+    const sub = Number(u.apiSubscriptionTokens ?? 0);
+    const total = (Number.isFinite(paid) ? paid : 0) + (Number.isFinite(sub) ? sub : 0);
+    return total;
+  } catch {
+    return null;
+  }
 }
 
 export type PollResult = {
@@ -82,8 +124,9 @@ export async function getGeneration(id: string): Promise<PollResult> {
       media.push({ url: im.url, type: /\.(mp4|webm|mov)(\?|$)/i.test(im.url) ? "video" : "image" });
     }
   }
-  const costRaw = gen.apiCreditCost ?? gen.apiDollarCost;
-  const cost = costRaw == null ? null : Number(costRaw);
+  // GET generation carries no cost field today; keep the lookup in case Leonardo adds one (credits → USD)
+  const costRaw = gen.apiCreditCost;
+  const cost = costRaw == null ? NaN : Number(costRaw) / CREDITS_PER_USD;
   return { status, media, cost: Number.isFinite(cost) ? cost : null, raw: json };
 }
 
@@ -92,6 +135,9 @@ export async function uploadImage(filePath: string): Promise<string> {
   if (isMock()) return `mock-upload-${path.basename(filePath)}`;
   let ext = path.extname(filePath).slice(1).toLowerCase();
   if (!["png", "jpg", "jpeg", "webp"].includes(ext)) throw new Error(`Unsupported image type: .${ext}`);
+  // normalise ".jpeg" to ".jpg" so the stored init image has the most widely accepted extension
+  const mime = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : `image/${ext}`;
+  if (ext === "jpeg") ext = "jpg";
   const res = await fetch(`${BASE}/v1/init-image`, {
     method: "POST",
     headers: headers(),
@@ -102,8 +148,7 @@ export async function uploadImage(filePath: string): Promise<string> {
   const fields = typeof up.fields === "string" ? (JSON.parse(up.fields) as Record<string, string>) : up.fields;
   const form = new FormData();
   for (const [k, v] of Object.entries(fields)) form.append(k, v);
-  if (ext === "jpg") ext = "jpeg";
-  form.append("file", new Blob([fs.readFileSync(filePath)], { type: `image/${ext}` }), path.basename(filePath));
+  form.append("file", new Blob([fs.readFileSync(filePath)], { type: mime }), `${path.basename(filePath, path.extname(filePath))}.${ext}`);
   const s3 = await fetch(up.url, { method: "POST", body: form });
   if (!s3.ok && s3.status !== 204) throw new Error(`Upload to storage failed: ${s3.status} ${await s3.text()}`);
   return up.id;

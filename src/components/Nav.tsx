@@ -3,10 +3,22 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import { FlaskConical, Loader2 } from "lucide-react";
-import { api } from "@/lib/client";
+import { Coins, FlaskConical, Loader2 } from "lucide-react";
+import { api, fmtUsd } from "@/lib/client";
 
-type Status = { mock: boolean; hasKey: boolean; counts: Record<string, number>; creditsSpent: number };
+type Status = {
+  mock: boolean;
+  hasKey: boolean;
+  counts: Record<string, number>;
+  balance: number | null;
+  creditsPerUsd: number;
+  usdSpent: number;
+  unknownCost: number;
+  estimatedCost: number;
+  liveGenerations: number;
+};
+
+const fmt = (n: number) => (Math.round(n * 10) / 10).toLocaleString();
 
 const LINKS = [
   { href: "/", label: "Compare" },
@@ -64,8 +76,30 @@ export function Nav() {
             </span>
           )}
           {s && !s.mock && (
-            <span className="rounded-full border border-line bg-panel px-2.5 py-1 text-muted">
-              {Math.round(s.creditsSpent).toLocaleString()} credits used
+            <span
+              className="flex items-center gap-2 rounded-full border border-line bg-panel px-2.5 py-1 text-muted"
+              title={[
+                s.balance != null
+                  ? `Balance: ${fmt(s.balance)} API credits ≈ ${fmtUsd(s.balance / s.creditsPerUsd, 2)} (read live from Leonardo; includes usage outside this app).`
+                  : "Balance unavailable.",
+                `Spent by Model Lab: ${fmtUsd(s.usdSpent, 2)} ≈ ${fmt(s.usdSpent * s.creditsPerUsd)} credits over ${s.liveGenerations} live generations (failed ones are refunded and excluded).`,
+                s.estimatedCost ? `${s.estimatedCost} of these costs are estimates.` : "",
+                s.unknownCost ? `${s.unknownCost} generation(s) have unknown cost.` : "",
+                `Conversion: ${s.creditsPerUsd} credits per USD (measured from balance changes).`,
+              ]
+                .filter(Boolean)
+                .join("\n")}
+            >
+              <Coins size={12} className="text-accent" />
+              <span>
+                <b className="font-semibold text-ink">{s.balance == null ? "—" : fmt(s.balance)}</b> credits
+                {s.balance != null && <span className="text-faint"> ≈ {fmtUsd(s.balance / s.creditsPerUsd, 2)}</span>}
+              </span>
+              <span className="text-faint">·</span>
+              <span>
+                <b className="font-semibold text-ink">{fmtUsd(s.usdSpent, 2)}</b> spent here
+                {s.unknownCost ? <span className="text-warn"> (+{s.unknownCost} unknown)</span> : null}
+              </span>
             </span>
           )}
           {s && (

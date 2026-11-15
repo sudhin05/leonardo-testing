@@ -64,6 +64,8 @@ export type Generation = {
   status: "queued" | "submitting" | "pending" | "complete" | "failed" | "skipped";
   error: string | null;
   credit_cost: number | null;
+  cost_source: "api" | "measured" | "estimate" | "mock" | null;
+  ref_image: string | null;
   width: number | null;
   height: number | null;
   mock: number;
@@ -106,6 +108,29 @@ export function aspectCss(ar: string) {
 export function fmtMs(ms: number | null | undefined) {
   if (ms == null) return "—";
   return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`;
+}
+
+/** US dollars: $0.090 for small amounts, $12.34 for totals. */
+export function fmtUsd(v: number | null | undefined, digits?: number) {
+  if (v == null || Number.isNaN(Number(v))) return "—";
+  const d = digits ?? (Math.abs(v) < 1 ? 3 : 2);
+  return `$${Number(v).toFixed(d)}`;
+}
+
+/** Cost of one generation in USD ("$0.090", "~$0.090" when estimated, "—" unknown) plus a tooltip saying where it came from. */
+export function fmtCost(cost: number | null | undefined, source?: string | null) {
+  if (cost == null) return { text: "—", title: "Cost unknown — Leonardo didn't report it and the balance change couldn't be measured" };
+  const title =
+    source === "api"
+      ? "Cost reported by Leonardo for this call"
+      : source === "measured"
+        ? "Measured from your account balance before/after submitting (credits ÷ 669 per USD)"
+        : source === "estimate"
+          ? "Estimated from earlier calls with identical settings"
+          : source === "mock"
+            ? "Simulated (mock mode)"
+            : "Cost in USD";
+  return { text: (source === "estimate" ? "~" : "") + fmtUsd(cost), title };
 }
 
 export function fmtNum(v: number | null | undefined, digits = 1) {

@@ -71,14 +71,26 @@ function table(t: Partial<Record<AspectRatio, Dims>>) {
   };
 }
 
-/** Snap each edge to the closest value from an allowed list. */
+/**
+ * Pick a (width, height) pair from an allowed edge list whose ratio matches the target as exactly as possible,
+ * then closest to targetPx. Snapping each edge independently produced off-ratio pairs (896×1152 for 4:5) that
+ * Ideogram rejects with a bare "An error occurred".
+ */
 function snapList(allowed: number[], targetPx: number) {
   return (ar: AspectRatio): Dims => {
-    const r = ratio(ar);
-    const w = Math.sqrt(targetPx * r);
-    const h = w / r;
-    const closest = (v: number) => allowed.reduce((a, b) => (Math.abs(b - v) < Math.abs(a - v) ? b : a));
-    return { width: closest(w), height: closest(h) };
+    const want = Math.log(ratio(ar));
+    let best: Dims = { width: allowed[0], height: allowed[0] };
+    let bestScore = Infinity;
+    for (const w of allowed) {
+      for (const h of allowed) {
+        const score = Math.abs(Math.log(w / h) - want) * 20 + Math.abs(Math.log((w * h) / targetPx));
+        if (score < bestScore) {
+          bestScore = score;
+          best = { width: w, height: h };
+        }
+      }
+    }
+    return best;
   };
 }
 
@@ -164,9 +176,10 @@ export const MODELS: ModelDef[] = [
       "3:2": { width: 1264, height: 848 },
       "16:9": { width: 1376, height: 768 },
       "9:16": { width: 768, height: 1376 },
-      "4:5": { width: 912, height: 1136 },
-      "3:4": { width: 880, height: 1184 },
-      "4:3": { width: 1184, height: 880 },
+      // 912×1136 was rejected ("An error occurred"); exact-ratio sizes in multiples of 64 instead
+      "4:5": { width: 1024, height: 1280 },
+      "3:4": { width: 960, height: 1280 },
+      "4:3": { width: 1280, height: 960 },
     }),
     defaults: { quality: "MEDIUM", prompt_enhance: "OFF" },
     quantityKey: "quantity",

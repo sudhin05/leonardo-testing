@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { ArrowDownWideNarrow, Download, Trophy } from "lucide-react";
-import { api, fmtMs, fmtNum } from "@/lib/client";
+import { api, fmtMs, fmtNum, fmtUsd } from "@/lib/client";
 
 type Row = {
   model_key: string;
@@ -13,7 +13,9 @@ type Row = {
   failed: number;
   latency_ms: number | null;
   avg_cost: number | null;
+  cost_per_image: number | null;
   total_cost: number | null;
+  cost_unknown: number | null;
   outputs?: number;
   scored?: number;
   text_accuracy?: number | null;
@@ -26,7 +28,7 @@ type Row = {
 type Heat = { model_key: string; ad_category: string; overall: number | null; keep_rate: number | null; n: number };
 type Data = { rows: Row[]; heat: Heat[]; categories: string[] };
 
-type SortKey = "overall" | "keep_rate" | "text_accuracy" | "realism" | "color" | "latency_ms" | "avg_cost";
+type SortKey = "overall" | "keep_rate" | "text_accuracy" | "realism" | "color" | "latency_ms" | "cost_per_image";
 
 export default function LeaderboardPage() {
   const [data, setData] = useState<Data | null>(null);
@@ -41,7 +43,7 @@ export default function LeaderboardPage() {
 
   const rows = useMemo(() => {
     const r = [...(data?.rows ?? [])];
-    const asc = sort === "latency_ms" || sort === "avg_cost";
+    const asc = sort === "latency_ms" || sort === "cost_per_image";
     r.sort((a, b) => {
       const av = a[sort] ?? (asc ? Infinity : -Infinity);
       const bv = b[sort] ?? (asc ? Infinity : -Infinity);
@@ -110,8 +112,8 @@ export default function LeaderboardPage() {
               <th className="px-4 py-3">Scored</th>
               <th className="px-4 py-3">Success</th>
               <SortTh k="latency_ms" sort={sort} setSort={setSort}>Avg time</SortTh>
-              <SortTh k="avg_cost" sort={sort} setSort={setSort}>Credits / call</SortTh>
-              <th className="px-4 py-3">Total credits</th>
+              <SortTh k="cost_per_image" sort={sort} setSort={setSort}>$ / image</SortTh>
+              <th className="px-4 py-3">Total $</th>
             </tr>
           </thead>
           <tbody>
@@ -138,8 +140,18 @@ export default function LeaderboardPage() {
                   {r.gens ? Math.round((r.ok / r.gens) * 100) : 0}%
                 </td>
                 <td className="px-4 py-3 font-mono text-xs text-muted">{fmtMs(r.latency_ms)}</td>
-                <td className="px-4 py-3 font-mono text-xs text-muted">{fmtNum(r.avg_cost, 1)}</td>
-                <td className="px-4 py-3 font-mono text-xs text-muted">{fmtNum(r.total_cost, 0)}</td>
+                <td className="px-4 py-3 font-mono text-xs text-muted" title={`Per call: ${fmtUsd(r.avg_cost)} · ≈ ${Math.round((r.cost_per_image ?? 0) * 669)} credits / image`}>
+                  {fmtUsd(r.cost_per_image)}
+                </td>
+                <td className="px-4 py-3 font-mono text-xs text-muted">
+                  {fmtUsd(r.total_cost, 2)}
+                  {r.cost_unknown ? (
+                    <span className="text-warn" title={`${r.cost_unknown} completed generation(s) with unknown cost`}>
+                      {" "}
+                      +?
+                    </span>
+                  ) : null}
+                </td>
               </tr>
             ))}
             {!rows.length && (

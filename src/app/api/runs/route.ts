@@ -1,7 +1,7 @@
-import { bad, boot, ok, uploadPath } from "@/lib/server";
+import { bad, boot, ok } from "@/lib/server";
 import { buildRequest, type AspectRatio } from "@/lib/models";
 import { getModelDef, getOverrides } from "@/lib/registry";
-import { uploadImage } from "@/lib/leonardo";
+import { leonardoIdFor } from "@/lib/refs";
 
 export const dynamic = "force-dynamic";
 
@@ -34,7 +34,7 @@ export async function POST(req: Request) {
   );
   const insRun = d.prepare("INSERT INTO runs (prompt_id, prompt_text, aspect_ratio, quantity) VALUES (?, ?, ?, ?)");
   const insGen = d.prepare(
-    "INSERT INTO generations (run_id, prompt_id, model_key, status, request, width, height, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO generations (run_id, prompt_id, model_key, status, request, width, height, error, ref_image) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
   );
 
   for (const pid of b.promptIds) {
@@ -43,14 +43,12 @@ export async function POST(req: Request) {
 
     // Resolve the reference image (prompt-level upload wins over the product's image), uploading once and caching the id.
     let refId: string | null = null;
+    let refFile: string | null = null;
     if (p.input_mode === "reference") {
       try {
-        if (p.input_image) {
-          refId = p.input_leonardo_id ?? (await uploadImage(uploadPath(p.input_image)));
-          d.prepare("UPDATE prompts SET input_leonardo_id = ? WHERE id = ?").run(refId, p.id);
-        } else if (p.ref_image && p.product_id) {
-          refId = p.ref_leonardo_id ?? (await uploadImage(uploadPath(p.ref_image)));
-          d.prepare("UPDATE products SET ref_leonardo_id = ? WHERE id = ?").run(refId, p.product_id);
+        refFile = p.input_image ?? (p.product_id ? p.ref_image : null);
+        if (refFile) {
+          refId = await leonardoIdFor(refFile);
         } else {
           warnings.push(`${p.test_id}: needs a reference image — upload one on the prompt or its product. Skipped.`);
           continue;
@@ -81,10 +79,10 @@ export async function POST(req: Request) {
       });
       const params = request.parameters as { width?: number; height?: number };
       if (refId && !def.refGuidance) {
-        insGen.run(runId, p.id, key, "skipped", JSON.stringify(request), params.width ?? null, params.height ?? null, "Model has no image-reference input");
+        insGen.run(runId, p.id, key, "skipped", JSON.stringify(request), params.width ?? null, params.height ?? null, "Model has no image-reference input", null);
         continue;
       }
-      insGen.run(runId, p.id, key, "queued", JSON.stringify(request), params.width ?? null, params.height ?? null, null);
+      insGen.run(runId, p.id, key, "queued", JSON.stringify(request), params.width ?? null, params.height ?? null, null, refId ? refFile : null);
       queued++;
     }
   }

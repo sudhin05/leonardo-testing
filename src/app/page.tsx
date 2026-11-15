@@ -18,6 +18,7 @@ import {
 import {
   ACTIVE,
   api,
+  fmtCost,
   mediaSrc,
   uploadSrc,
   type Generation,
@@ -43,6 +44,7 @@ export default function ComparePage() {
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<{ text: string; tone: "ok" | "warn" } | null>(null);
   const [sel, setSel] = useState<Map<number, LightItem>>(new Map());
+  const [withRef, setWithRef] = useState(true);
   const [lb, setLb] = useState<{ items: LightItem[]; start: number; compare?: LightItem[] } | null>(null);
   const [confirm, setConfirm] = useState<{ scope: Scope; promptIds: number[]; calls: number } | null>(null);
   const kickRef = useRef(0);
@@ -156,7 +158,8 @@ export default function ComparePage() {
       return {
         output: o,
         title: m?.label ?? g.model_key,
-        subtitle: `${prompt?.test_id ?? ""} · ${g.width}×${g.height} · ${g.credit_cost ?? "—"} credits${g.mock ? " · MOCK" : ""}`,
+        subtitle: `${prompt?.test_id ?? ""} · ${g.width}×${g.height} · ${fmtCost(g.credit_cost, g.cost_source).text}${g.mock ? " · MOCK" : ""}`,
+        reference: g.ref_image,
       };
     },
     [modelMap, prompt],
@@ -168,7 +171,7 @@ export default function ComparePage() {
   }, [view, visibleModels, latestByModel, results, itemFor]);
 
   const openOutput = (o: Output) => {
-    const idx = viewItems.findIndex((it) => it.output.id === o.id);
+    const idx = viewItems.findIndex((it) => it.output?.id === o.id);
     setLb({ items: viewItems, start: Math.max(0, idx) });
   };
 
@@ -221,9 +224,13 @@ export default function ComparePage() {
   };
 
   const retry = async (g: Generation) => {
-    await api(`/api/generations/${g.id}`, { method: "POST" });
-    kickRef.current = Date.now();
-    void loadResults();
+    try {
+      await api(`/api/generations/${g.id}`, { method: "POST" });
+      kickRef.current = Date.now();
+      void loadResults();
+    } catch (e) {
+      setToast({ text: (e as Error).message, tone: "warn" });
+    }
   };
 
   const uploadRef = async (file: File) => {
@@ -245,7 +252,10 @@ export default function ComparePage() {
     return () => clearTimeout(t);
   }, [toast]);
 
-  const refImg = prompt?.input_image ?? prompt?.product_ref_image ?? null;
+  const refImg = prompt?.input_mode === "reference" ? (prompt.input_image ?? prompt.product_ref_image ?? null) : null;
+  const refItem: LightItem | null =
+    prompt && refImg ? { src: uploadSrc(refImg), title: "Reference image", subtitle: `${prompt.test_id} · input sent to the models` } : null;
+  const compareSet = [...(withRef && refItem ? [refItem] : []), ...sel.values()];
   const gridStyle = { gridTemplateColumns: `repeat(auto-fill, minmax(${cardW}px, 1fr))` };
 
   return (
@@ -345,23 +355,30 @@ export default function ComparePage() {
                 {prompt.input_mode === "reference" && (
                   <div className="w-36 shrink-0">
                     <div className="mb-1 text-[10px] font-semibold tracking-wider text-faint uppercase">Reference</div>
-                    <label className="checker relative block aspect-square cursor-pointer overflow-hidden rounded-lg border border-dashed border-line-2 hover:border-accent">
-                      {refImg ? (
-                        // eslint-disable-next-line @next/next/no-img-element
+                    {refImg ? (
+                      <button
+                        onClick={() => refItem && setLb({ items: [refItem], start: 0 })}
+                        title="View reference image"
+                        className="checker relative block aspect-square w-full cursor-zoom-in overflow-hidden rounded-lg border border-line-2 hover:border-accent"
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img src={uploadSrc(refImg)} alt="" className="h-full w-full object-contain" />
-                      ) : (
-                        <span className="absolute inset-0 flex flex-col items-center justify-center gap-1 text-center text-[11px] text-muted">
-                          <Upload size={16} /> Upload product PNG
-                        </span>
-                      )}
-                      <input
-                        type="file"
-                        accept="image/png,image/jpeg,image/webp"
-                        className="hidden"
-                        onChange={(e) => e.target.files?.[0] && uploadRef(e.target.files[0])}
-                      />
-                    </label>
-                    {refImg && !prompt.input_image && <p className="mt-1 text-[10px] text-faint">From product {prompt.sku}</p>}
+                      </button>
+                    ) : (
+                      <span className="checker relative block aspect-square overflow-hidden rounded-lg border border-dashed border-line-2" />
+                    )}
+                    <div className="mt-1 flex items-center justify-between text-[10px] text-faint">
+                      <span>{refImg && !prompt.input_image ? `From ${prompt.sku}` : refImg ? "Prompt image" : "None yet"}</span>
+                      <label className="flex cursor-pointer items-center gap-1 text-muted hover:text-ink">
+                        <Upload size={11} /> {refImg ? "Replace" : "Upload"}
+                        <input
+                          type="file"
+                          accept="image/*,.avif,.heic"
+                          className="hidden"
+                          onChange={(e) => e.target.files?.[0] && uploadRef(e.target.files[0])}
+                        />
+                      </label>
+                    </div>
                   </div>
                 )}
               </div>
@@ -553,15 +570,26 @@ export default function ComparePage() {
       {sel.size > 0 && (
         <div className="fixed bottom-5 left-1/2 z-40 flex -translate-x-1/2 items-center gap-3 rounded-2xl border border-line-2 bg-panel-2/95 p-2 pl-3 shadow-2xl backdrop-blur">
           <div className="flex -space-x-2">
-            {[...sel.values()].map((it) => (
+            {compareSet.map((it) => (
               // eslint-disable-next-line @next/next/no-img-element
-              <img key={it.output.id} src={mediaSrc(it.output)} alt="" className="h-9 w-9 rounded-md border-2 border-panel-2 object-cover" />
+              <img
+                key={it.output?.id ?? it.src}
+                src={it.output ? mediaSrc(it.output) : it.src}
+                alt=""
+                className={`h-9 w-9 rounded-md border-2 object-cover ${it.output ? "border-panel-2" : "border-warn"}`}
+              />
             ))}
           </div>
           <span className="text-sm text-muted">{sel.size} selected</span>
+          {refItem && (
+            <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted" title="Add the reference image as a pane in the comparison">
+              <input type="checkbox" checked={withRef} onChange={(e) => setWithRef(e.target.checked)} className="accent-[#8b6cff]" />
+              + reference
+            </label>
+          )}
           <button
-            disabled={sel.size < 2}
-            onClick={() => setLb({ items: [...sel.values()], start: 0, compare: [...sel.values()] })}
+            disabled={compareSet.length < 2}
+            onClick={() => setLb({ items: compareSet, start: 0, compare: compareSet })}
             className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-sm font-semibold text-white disabled:opacity-40"
           >
             <Columns2 size={14} /> Compare side by side
