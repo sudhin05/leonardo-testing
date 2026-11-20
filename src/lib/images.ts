@@ -2,6 +2,8 @@ import path from "node:path";
 import sharp from "sharp";
 import { putFile } from "./storage";
 
+type SharpImage = ReturnType<typeof sharp>;
+
 /** Formats Leonardo's init-image upload accepts as-is. Everything else (avif, heic, gif, bmp, tiff…) is converted. */
 const PASSTHROUGH = new Set(["png", "jpg", "jpeg", "webp"]);
 /** Converted images are capped here (an iPhone HEIC is 3024×4032; as PNG that is ~24 MB). */
@@ -11,7 +13,7 @@ const MAX_EDGE = 2048;
  * Decode anything sharp can't. sharp's prebuilt libvips reads AVIF but not HEVC-coded HEIC (iPhone photos),
  * so those go through heic-convert (libheif compiled to WebAssembly) first.
  */
-async function decode(buf: Buffer, originalName: string): Promise<sharp.Sharp> {
+async function decode(buf: Buffer, originalName: string): Promise<SharpImage> {
   try {
     const img = sharp(buf);
     await img.clone().raw().toBuffer(); // force a real decode, not just a header read
@@ -37,7 +39,7 @@ export async function saveImageBuffer(buf: Buffer, originalName: string, prefix:
     await putFile("uploads", name, buf);
     return name;
   }
-  let img: sharp.Sharp;
+  let img: SharpImage;
   try {
     img = await decode(buf, originalName);
   } catch {
