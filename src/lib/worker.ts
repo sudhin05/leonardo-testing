@@ -1,18 +1,25 @@
-import fs from "node:fs";
-import path from "node:path";
-import { db, MEDIA_DIR } from "./db";
+import { all, get, run } from "./db";
 import { CREDITS_PER_USD, createGeneration, getBalance, getGeneration, isMock, mockSvg } from "./leonardo";
 import { getModelDef } from "./registry";
+import { putFile } from "./storage";
 
 /**
- * Background worker living inside the Next.js server process.
- * queued → (submit) → pending → (poll) → complete | failed
+ * Generation worker, advanced in short "ticks" triggered by requests (status polling, Generate).
+ * Works the same on a laptop and on serverless hosts that have no always-on process.
+ *
+ *   queued → submitting → pending → completing → complete
+ *                     ↘ failed ↙
+ *
+ * Every transition is a conditional UPDATE ("claim"), so two ticks running at once — two people with the
+ * app open, or two serverless instances — never submit or save the same generation twice.
  */
 
-const TICK_MS = 2000;
 const POLL_EVERY_MS = 4000;
+const STUCK_MS = 120_000; // a tick that died mid-step
 const IMAGE_TIMEOUT_MS = 15 * 60_000;
 const VIDEO_TIMEOUT_MS = 30 * 60_000;
+
+export const ACTIVE_SQL = "('queued','submitting','pending','completing')";
 
 type GenRow = {
   id: number;
@@ -26,71 +33,71 @@ type GenRow = {
   height: number;
 };
 
-type G = typeof globalThis & {
-  __labWorker?: { timer: NodeJS.Timeout; busy: boolean };
-  __labTick?: () => Promise<void>;
-};
+type G = typeof globalThis & { __labTicking?: boolean };
 
-// The interval lives on globalThis (survives dev hot-reload) but always calls the *latest* module's tick.
-async function tick() {
-  const state = (globalThis as G).__labWorker!;
-  if (state.busy) return;
-  state.busy = true;
+/** Advance the queue for at most `budgetMs`. Safe to call often and concurrently. */
+export async function tick(budgetMs = 20_000) {
+  const g = globalThis as G;
+  if (g.__labTicking) return; // one tick per instance at a time
+  g.__labTicking = true;
+  const deadline = Date.now() + budgetMs;
   try {
-    await pollPending();
-    await submitQueued();
+    await recoverStuck();
+    await pollPending(deadline);
+    if (Date.now() < deadline) await submitQueued(deadline);
   } catch (e) {
-    console.error("[worker]", e);
+    console.error("[tick]", e);
   } finally {
-    state.busy = false;
+    g.__labTicking = false;
   }
 }
-(globalThis as G).__labTick = tick;
 
-export function ensureWorker() {
-  const g = globalThis as G;
-  if (g.__labWorker) return;
-  g.__labWorker = { busy: false, timer: setInterval(() => void (globalThis as G).__labTick?.(), TICK_MS) };
-  // anything stuck mid-submit from a previous server process goes back to the queue
-  db().prepare("UPDATE generations SET status = 'queued' WHERE status = 'submitting'").run();
+export async function activeCount() {
+  return (await get<{ n: number }>(`SELECT COUNT(*) AS n FROM generations WHERE status IN ${ACTIVE_SQL}`))?.n ?? 0;
 }
 
 function maxConcurrent() {
   return Math.max(1, Number(process.env.LEONARDO_MAX_CONCURRENT || 6));
 }
 
-async function submitQueued() {
-  const d = db();
-  const inflight = (d.prepare("SELECT COUNT(*) AS n FROM generations WHERE status IN ('submitting','pending')").get() as { n: number }).n;
+async function recoverStuck() {
+  const cutoff = Date.now() - STUCK_MS;
+  // died while submitting: the request may or may not have reached Leonardo, so don't resubmit blindly
+  await run(
+    "UPDATE generations SET status = 'failed', error = 'Interrupted while submitting; press Retry', completed_at = ? WHERE status = 'submitting' AND last_polled_at < ?",
+    [Date.now(), cutoff],
+  );
+  // died while saving results: Leonardo still has them, so go back to polling
+  await run("UPDATE generations SET status = 'pending', last_polled_at = NULL WHERE status = 'completing' AND last_polled_at < ?", [cutoff]);
+}
+
+async function submitQueued(deadline: number) {
+  const inflight = (await get<{ n: number }>("SELECT COUNT(*) AS n FROM generations WHERE status IN ('submitting','pending','completing')"))?.n ?? 0;
   const slots = maxConcurrent() - inflight;
   if (slots <= 0) return;
-  const rows = d.prepare("SELECT * FROM generations WHERE status = 'queued' ORDER BY id LIMIT ?").all(slots) as unknown as GenRow[];
-  if (isMock()) {
-    await Promise.all(rows.map(submitOne));
-    return;
+  const rows = await all<GenRow>("SELECT * FROM generations WHERE status = 'queued' ORDER BY id LIMIT ?", [slots]);
+  for (const r of rows) {
+    if (Date.now() > deadline) break;
+    await submitOne(r);
   }
-  // Live: submit one at a time so a balance drop can be attributed to exactly one generation.
-  for (const r of rows) await submitOne(r);
 }
 
 // ── Credits ──────────────────────────────────────────────────────────────
-// Leonardo's GET generation has no cost field. Cost comes from (1) the create response if present,
-// else (2) the drop in account balance (GET /v1/me) across that single submit, else (3) an estimate
-// from earlier generations with identical settings.
+// Leonardo returns the cost in USD on create (normal case). Fallbacks: the balance drop around this submit,
+// then an estimate from earlier generations with identical settings.
 
-type BalanceCache = { value: number | null; ts: number };
-type GB = typeof globalThis & { __labBalance?: BalanceCache; __labApiCost?: Set<string> };
+type GB = typeof globalThis & { __labBalance?: { value: number | null; ts: number }; __labApiCost?: Set<string> };
 
 export async function readBalance(): Promise<number | null> {
   const value = await getBalance();
   if (value != null) {
     (globalThis as GB).__labBalance = { value, ts: Date.now() };
-    db().prepare("INSERT OR REPLACE INTO balance_log (ts, balance) VALUES (?, ?)").run(Date.now(), value);
+    await run("INSERT OR REPLACE INTO balance_log (ts, balance) VALUES (?, ?)", [Date.now(), value]);
   }
   return value;
 }
 
-export async function cachedBalance(maxAgeMs = 20_000): Promise<number | null> {
+export async function cachedBalance(maxAgeMs = 30_000): Promise<number | null> {
   const c = (globalThis as GB).__labBalance;
   if (c && Date.now() - c.ts < maxAgeMs) return c.value;
   return readBalance();
@@ -101,29 +108,29 @@ function apiCostModels() {
   return (g.__labApiCost ??= new Set());
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-function estimateCost(row: GenRow): number | null {
+async function estimateCost(row: GenRow): Promise<number | null> {
   const sig = (req: string) => {
     const p = (JSON.parse(req).parameters ?? {}) as Record<string, unknown>;
     return JSON.stringify([p.width, p.height, p.quantity, p.quality, p.mode, p.duration, !!p.guidances]);
   };
   const mine = sig(row.request);
-  const prior = db()
-    .prepare("SELECT request, credit_cost FROM generations WHERE model_key = ? AND cost_source IN ('api','measured') AND credit_cost IS NOT NULL ORDER BY id DESC LIMIT 50")
-    .all(row.model_key) as { request: string; credit_cost: number }[];
+  const prior = await all<{ request: string; credit_cost: number }>(
+    "SELECT request, credit_cost FROM generations WHERE model_key = ? AND cost_source IN ('api','measured') AND credit_cost IS NOT NULL ORDER BY id DESC LIMIT 50",
+    [row.model_key],
+  );
   const same = prior.filter((p) => sig(p.request) === mine);
   if (!same.length) return null;
   return Math.round((same.reduce((a, b) => a + b.credit_cost, 0) / same.length) * 10000) / 10000;
 }
 
 async function submitOne(row: GenRow) {
-  const d = db();
-  d.prepare("UPDATE generations SET status = 'submitting' WHERE id = ?").run(row.id);
+  const claimed = await run("UPDATE generations SET status = 'submitting', last_polled_at = ? WHERE id = ? AND status = 'queued'", [Date.now(), row.id]);
+  if (claimed.changes !== 1) return; // someone else took it
   if (isMock()) {
-    d.prepare(
-      "UPDATE generations SET status = 'pending', leonardo_id = ?, mock = 1, submitted_at = ?, credit_cost = ?, cost_source = 'mock' WHERE id = ?",
-    ).run(`mock-${row.id}`, Date.now(), Math.round(300 + ((row.id * 37) % 900)) / 10000, row.id);
+    await run(
+      "UPDATE generations SET status = 'pending', leonardo_id = ?, mock = 1, submitted_at = ?, last_polled_at = NULL, credit_cost = ?, cost_source = 'mock' WHERE id = ?",
+      [`mock-${row.id}`, Date.now(), Math.round(300 + ((row.id * 37) % 900)) / 10000, row.id],
+    );
     return;
   }
   try {
@@ -135,106 +142,111 @@ async function submitOne(row: GenRow) {
     let source: string | null = cost != null ? "api" : null;
     if (cost != null) apiCostModels().add(row.model_key);
     if (cost == null && before != null) {
-      let after = await readBalance();
-      if (after === before) {
-        await sleep(1500);
-        after = await readBalance();
-      }
+      const after = await readBalance();
       if (after != null && before - after > 0) {
-        cost = Math.round(((before - after) / CREDITS_PER_USD) * 10000) / 10000; // balance is in credits; store USD
+        cost = Math.round(((before - after) / CREDITS_PER_USD) * 10000) / 10000;
         source = "measured";
       }
     }
     if (cost == null) {
-      cost = estimateCost(row);
+      cost = await estimateCost(row);
       if (cost != null) source = "estimate";
     }
-    d.prepare(
-      `UPDATE generations SET status = 'pending', leonardo_id = ?, submitted_at = ?, credit_cost = ?, cost_source = ?, create_response = ?, mock = 0
+    await run(
+      `UPDATE generations SET status = 'pending', leonardo_id = ?, submitted_at = ?, last_polled_at = NULL, credit_cost = ?, cost_source = ?, create_response = ?, mock = 0
        WHERE id = ?`,
-    ).run(res.generationId, submittedAt, cost, source, JSON.stringify(res.raw).slice(0, 4000), row.id);
+      [res.generationId, submittedAt, cost, source, JSON.stringify(res.raw).slice(0, 4000), row.id],
+    );
   } catch (e) {
-    fail(row.id, e);
+    await fail(row.id, e);
   }
 }
 
-async function pollPending() {
-  const d = db();
-  const cutoff = Date.now() - POLL_EVERY_MS;
-  const rows = d
-    .prepare("SELECT * FROM generations WHERE status = 'pending' AND (last_polled_at IS NULL OR last_polled_at < ?)")
-    .all(cutoff) as unknown as GenRow[];
-  await Promise.all(rows.map(pollOne));
+async function pollPending(deadline: number) {
+  const now = Date.now();
+  const rows = await all<GenRow>(
+    "SELECT * FROM generations WHERE status = 'pending' AND (last_polled_at IS NULL OR last_polled_at < ?) ORDER BY id LIMIT 12",
+    [now - POLL_EVERY_MS],
+  );
+  // poll in parallel (cheap GETs); saving results is sequential inside each
+  await Promise.all(rows.map((r) => (Date.now() < deadline ? pollOne(r) : Promise.resolve())));
 }
 
 async function pollOne(row: GenRow) {
-  const d = db();
   const now = Date.now();
-  d.prepare("UPDATE generations SET last_polled_at = ? WHERE id = ?").run(now, row.id);
-  const def = getModelDef(row.model_key);
-  const isVideo = def?.kind === "video";
-  // Checked only after asking Leonardo (below), so work that finished while the app was closed is still collected.
-  const timedOut = !!row.submitted_at && now - row.submitted_at > (isVideo ? VIDEO_TIMEOUT_MS : IMAGE_TIMEOUT_MS);
+  const claim = await run(
+    "UPDATE generations SET last_polled_at = ? WHERE id = ? AND status = 'pending' AND (last_polled_at IS NULL OR last_polled_at < ?)",
+    [now, row.id, now - POLL_EVERY_MS],
+  );
+  if (claim.changes !== 1) return;
+  const def = await getModelDef(row.model_key);
+  const timedOut = !!row.submitted_at && now - row.submitted_at > (def?.kind === "video" ? VIDEO_TIMEOUT_MS : IMAGE_TIMEOUT_MS);
 
   if (row.mock) {
     const wait = 2500 + ((row.id * 1931) % 6000);
     if (now - (row.submitted_at ?? now) < wait) return;
+    if (!(await claimCompletion(row.id))) return;
     const req = JSON.parse(row.request);
     const qty = Number(req.parameters?.quantity ?? 1);
-    const files: string[] = [];
+    const saved: Saved[] = [];
     for (let i = 0; i < qty; i++) {
       const name = `${row.id}_${i}.svg`;
-      fs.writeFileSync(
-        path.join(MEDIA_DIR, name),
-        mockSvg({
-          label: def?.label ?? row.model_key,
-          prompt: String(req.parameters?.prompt ?? ""),
-          width: row.width,
-          height: row.height,
-          seed: hash(row.model_key) + i * 3,
-        }),
-      );
-      files.push(name);
+      const svg = mockSvg({
+        label: def?.label ?? row.model_key,
+        prompt: String(req.parameters?.prompt ?? ""),
+        width: row.width,
+        height: row.height,
+        seed: hash(row.model_key) + i * 3,
+      });
+      await putFile("media", name, Buffer.from(svg));
+      saved.push({ local: name, remote: null, type: "image" });
     }
-    complete(row.id, files.map((f) => ({ local: f, remote: null, type: "image" as const })), null);
+    await complete(row.id, saved, null);
     return;
   }
 
   try {
     const res = await getGeneration(row.leonardo_id!);
-    if (res.status === "FAILED") return fail(row.id, new Error("Leonardo reported FAILED (possibly moderation/blocked)"));
+    if (res.status === "FAILED") return await fail(row.id, new Error("Leonardo reported FAILED (possibly moderation/blocked)"));
     if (res.status !== "COMPLETE" || res.media.length === 0) {
-      if (timedOut) fail(row.id, new Error("Timed out waiting for Leonardo"));
+      if (timedOut) await fail(row.id, new Error("Timed out waiting for Leonardo"));
       return;
     }
-    const saved: { local: string | null; remote: string; type: "image" | "video" }[] = [];
+    if (!(await claimCompletion(row.id))) return;
+    const saved: Saved[] = [];
     let i = 0;
-    for (const m of res.media) {
-      saved.push({ local: await download(m.url, `${row.id}_${i++}`), remote: m.url, type: m.type });
-    }
-    complete(row.id, saved, res.cost);
+    for (const m of res.media) saved.push({ local: await download(m.url, `${row.id}_${i++}`), remote: m.url, type: m.type });
+    await complete(row.id, saved, res.cost);
   } catch (e) {
-    // transient poll errors shouldn't kill the generation; record and retry next tick
-    if (timedOut) return fail(row.id, e);
-    d.prepare("UPDATE generations SET error = ? WHERE id = ?").run(String((e as Error).message), row.id);
+    if (timedOut) return await fail(row.id, e);
+    await run("UPDATE generations SET error = ? WHERE id = ? AND status = 'pending'", [String((e as Error).message), row.id]);
   }
 }
 
-function complete(id: number, media: { local: string | null; remote: string | null; type: "image" | "video" }[], cost: number | null) {
-  const d = db();
-  const ins = d.prepare("INSERT INTO outputs (generation_id, idx, remote_url, local_path, media_type) VALUES (?, ?, ?, ?, ?)");
-  media.forEach((m, i) => ins.run(id, i, m.remote, m.local, m.type));
-  d.prepare(
+type Saved = { local: string | null; remote: string | null; type: "image" | "video" };
+
+/** Only one tick may save a generation's results. */
+async function claimCompletion(id: number) {
+  const c = await run("UPDATE generations SET status = 'completing', last_polled_at = ? WHERE id = ? AND status = 'pending'", [Date.now(), id]);
+  if (c.changes !== 1) return false;
+  await run("DELETE FROM outputs WHERE generation_id = ?", [id]); // leftovers from an interrupted earlier save
+  return true;
+}
+
+async function complete(id: number, media: Saved[], cost: number | null) {
+  for (const [i, m] of media.entries()) {
+    await run("INSERT INTO outputs (generation_id, idx, remote_url, local_path, media_type) VALUES (?, ?, ?, ?, ?)", [id, i, m.remote, m.local, m.type]);
+  }
+  await run(
     `UPDATE generations SET status = 'complete', completed_at = ?, error = NULL,
        cost_source = CASE WHEN credit_cost IS NULL AND ? IS NOT NULL THEN 'api' ELSE cost_source END,
        credit_cost = COALESCE(credit_cost, ?) WHERE id = ?`,
-  ).run(Date.now(), cost, cost, id);
+    [Date.now(), cost, cost, id],
+  );
 }
 
-function fail(id: number, e: unknown) {
-  db()
-    .prepare("UPDATE generations SET status = 'failed', error = ?, completed_at = ? WHERE id = ?")
-    .run(String((e as Error)?.message ?? e), Date.now(), id);
+async function fail(id: number, e: unknown) {
+  await run("UPDATE generations SET status = 'failed', error = ?, completed_at = ? WHERE id = ?", [String((e as Error)?.message ?? e), Date.now(), id]);
 }
 
 async function download(url: string, base: string): Promise<string | null> {
@@ -246,7 +258,7 @@ async function download(url: string, base: string): Promise<string | null> {
     const ext =
       ct.includes("png") ? "png" : ct.includes("webp") ? "webp" : ct.includes("jpeg") ? "jpg" : ct.includes("mp4") ? "mp4" : fromUrl || "bin";
     const name = `${base}.${ext}`;
-    fs.writeFileSync(path.join(MEDIA_DIR, name), Buffer.from(await res.arrayBuffer()));
+    await putFile("media", name, Buffer.from(await res.arrayBuffer()));
     return name;
   } catch {
     return null;

@@ -2,9 +2,10 @@ import fs from "node:fs";
 import path from "node:path";
 import PDFDocument from "pdfkit";
 import sharp from "sharp";
-import { db, MEDIA_DIR, UPLOAD_DIR } from "./db";
+import { all, get } from "./db";
 import { listModels } from "./registry";
-import { leaderboard, matrixCells, type MatrixCell } from "./stats";
+import { readFile, type Folder } from "./storage";
+import { leaderboard, matrixCells, votesFor } from "./stats";
 
 /**
  * PDF report = summary page (leaderboard) + the Matrix (prompt × model thumbnails), A3 landscape.
@@ -39,12 +40,15 @@ type PromptRow = {
   sku: string | null;
 };
 
-/** A TTF with ₹, curly quotes etc. when available; Helvetica (Latin-1 only) otherwise. */
+/**
+ * A TTF with ₹, curly quotes etc. DejaVu ships with the app (npm dejavu-fonts-ttf) so hosted Linux builds have it;
+ * Helvetica (Latin-1 only) is the last resort.
+ */
 function pickFonts() {
+  const bundled = path.join(process.cwd(), "node_modules", "dejavu-fonts-ttf", "ttf");
   const candidates = [
+    [path.join(bundled, "DejaVuSans.ttf"), path.join(bundled, "DejaVuSans-Bold.ttf")],
     ["C:/Windows/Fonts/arial.ttf", "C:/Windows/Fonts/arialbd.ttf"],
-    ["C:/Windows/Fonts/segoeui.ttf", "C:/Windows/Fonts/segoeuib.ttf"],
-    ["/System/Library/Fonts/Supplemental/Arial.ttf", "/System/Library/Fonts/Supplemental/Arial Bold.ttf"],
     ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"],
   ];
   for (const [r, b] of candidates) if (fs.existsSync(r) && fs.existsSync(b)) return { regular: r, bold: b, unicode: true };
@@ -52,15 +56,15 @@ function pickFonts() {
 }
 
 const thumbCache = new Map<string, Buffer | null>();
-async function thumb(file: string | null, dir: string, max = 520): Promise<Buffer | null> {
-  if (!file) return null;
-  const p = path.join(dir, file);
-  const key = `${p}|${max}`;
+async function thumb(file: string | null, folder: Folder, max = 520): Promise<Buffer | null> {
+  if (!file || /\.(mp4|webm|mov)$/i.test(file)) return null;
+  const key = `${folder}/${file}|${max}`;
   if (thumbCache.has(key)) return thumbCache.get(key)!;
   let out: Buffer | null = null;
   try {
-    if (fs.existsSync(p) && !/\.(mp4|webm|mov)$/i.test(p)) {
-      out = await sharp(p).rotate().resize({ width: max, height: max, fit: "inside", withoutEnlargement: true }).flatten({ background: "#ffffff" }).jpeg({ quality: 82 }).toBuffer();
+    const data = await readFile(folder, file);
+    if (data) {
+      out = await sharp(data).rotate().resize({ width: max, height: max, fit: "inside", withoutEnlargement: true }).flatten({ background: "#ffffff" }).jpeg({ quality: 82 }).toBuffer();
     }
   } catch {
     out = null;
@@ -72,35 +76,34 @@ async function thumb(file: string | null, dir: string, max = 520): Promise<Buffe
 const usd = (v: number | null | undefined, d?: number) => (v == null ? "—" : `$${v.toFixed(d ?? (Math.abs(v) < 1 ? 3 : 2))}`);
 const num = (v: number | null | undefined, d = 1) => (v == null ? "—" : Number(v).toFixed(d));
 
-function cellOverall(c: MatrixCell) {
-  const v = [c.text_accuracy, c.realism, c.color].filter((x): x is number => x != null);
-  return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
-}
-
-export async function buildReport(opts: { category?: string }): Promise<Buffer> {
-  const d = db();
+export async function buildReport(opts: { runId: number; userId: number; category?: string }): Promise<Buffer> {
   thumbCache.clear(); // retried generations overwrite their files, so never reuse thumbs across reports
   const category = opts.category ?? "";
   const fonts = pickFonts();
   const clean = (s: string) => (fonts.unicode ? s : s.replace(/[“”]/g, '"').replace(/[‘’]/g, "'").replace(/[^\x20-\xff]/g, "?"));
 
-  const prompts = (
-    d
-      .prepare(
-        `SELECT p.id, p.test_id, p.ad_category, p.prompt, p.criteria, p.aspect_ratio, p.input_mode, p.input_image,
-                pr.ref_image AS product_ref_image, pr.sku
-         FROM prompts p LEFT JOIN products pr ON pr.id = p.product_id
-         WHERE p.kind = 'image' AND (? = '' OR p.ad_category = ?) ORDER BY p.test_id`,
-      )
-      .all(category, category) as unknown as PromptRow[]
+  const testRun = await get<{ name: string }>("SELECT name FROM test_runs WHERE id = ?", [opts.runId]);
+  const prompts = await all<PromptRow>(
+    `SELECT p.id, p.test_id, p.ad_category, p.prompt, p.criteria, p.aspect_ratio, p.input_mode, p.input_image,
+            pr.ref_image AS product_ref_image, pr.sku
+     FROM prompts p LEFT JOIN products pr ON pr.id = p.product_id
+     WHERE p.test_run_id = ? AND p.kind = 'image' AND (? = '' OR p.ad_category = ?) ORDER BY p.test_id`,
+    [opts.runId, category, category],
   );
-  const cells = matrixCells().filter((c) => prompts.some((p) => p.id === c.prompt_id));
+  const cells = (await matrixCells(opts.runId, opts.userId)).filter((c) => prompts.some((p) => p.id === c.prompt_id));
   const cellMap = new Map(cells.map((c) => [`${c.prompt_id}|${c.model_key}`, c]));
   const used = new Set(cells.map((c) => c.model_key));
-  const models = listModels().filter((m) => m.kind === "image" && used.has(m.key));
+  const models = (await listModels()).filter((m) => m.kind === "image" && used.has(m.key));
+  const voteRows = await votesFor(cells.map((c) => c.output_id).filter((x): x is number => !!x));
+  const votesByOutput = new Map<number, typeof voteRows>();
+  for (const v of voteRows) votesByOutput.set(v.output_id, [...(votesByOutput.get(v.output_id) ?? []), v]);
+  const voterNames = [...new Set(voteRows.map((v) => v.name))];
 
-  const liveCount = (d.prepare("SELECT COUNT(*) AS n FROM generations WHERE mock = 0").get() as { n: number }).n;
-  const lb = leaderboard(category, liveCount === 0);
+  const live = await get<{ n: number }>(
+    "SELECT COUNT(*) AS n FROM generations g JOIN prompts p ON p.id = g.prompt_id WHERE p.test_run_id = ? AND g.mock = 0",
+    [opts.runId],
+  );
+  const lb = await leaderboard(opts.runId, category, (live?.n ?? 0) === 0);
   const spend = cells.reduce((a, c) => a + (c.credit_cost ?? 0), 0);
 
   const doc = new PDFDocument({ size: "A3", layout: "landscape", margin: M, info: { Title: "Model Lab report", Creator: "Model Lab" } });
@@ -129,12 +132,22 @@ export async function buildReport(opts: { category?: string }): Promise<Buffer> 
 
   // ── Summary page ──
   doc.font("b").fontSize(26).fillColor(C.ink).text("Model comparison report", M, M);
-  doc.font("r").fontSize(11).fillColor(C.muted).text(`${category ? `Category: ${clean(category)} · ` : ""}Generated ${stamp}`, M, doc.y + 4);
+  doc
+    .font("r")
+    .fontSize(11)
+    .fillColor(C.muted)
+    .text(
+      `Test run: ${clean(testRun?.name ?? "")}${category ? ` · Category: ${clean(category)}` : ""} · Generated ${stamp}${
+        voterNames.length ? ` · Voters: ${clean(voterNames.join(", "))}` : ""
+      }`,
+      M,
+      doc.y + 4,
+    );
 
   const stats: [string, string][] = [
     ["Prompts", String(prompts.length)],
     ["Models compared", String(models.length)],
-    ["Results in matrix", String(cells.filter((c) => c.output_id).length)],
+    ["Team votes", String(voteRows.length)],
     ["Cost of matrix results", usd(spend, 2)],
   ];
   let sx = M;
@@ -149,7 +162,11 @@ export async function buildReport(opts: { category?: string }): Promise<Buffer> 
   // leaderboard table
   let y = sy + 90;
   doc.font("b").fontSize(14).fillColor(C.ink).text("Leaderboard", M, y);
-  doc.font("r").fontSize(9).fillColor(C.muted).text("Averages of reviewer scores (1–5). Keep rate = kept ÷ (kept + rejected). Costs in USD as reported by Leonardo.", M, doc.y + 2);
+  doc
+    .font("r")
+    .fontSize(9)
+    .fillColor(C.muted)
+    .text("Averages over every team member's votes (1–5). Keep rate = keep votes ÷ (keep + reject votes). Costs in USD as reported by Leonardo.", M, doc.y + 2);
   y = doc.y + 10;
   const cols: { h: string; w: number; get: (r: (typeof lb.rows)[number], i: number) => string; align?: "left" | "right" }[] = [
     { h: "#", w: 30, get: (_r, i) => String(i + 1) },
@@ -159,7 +176,7 @@ export async function buildReport(opts: { category?: string }): Promise<Buffer> 
     { h: "Realism", w: 70, get: (r) => num(r.realism, 2), align: "right" },
     { h: "Brand colour", w: 90, get: (r) => num(r.color, 2), align: "right" },
     { h: "Keep rate", w: 80, get: (r) => (r.keep_rate == null ? "—" : `${Math.round(r.keep_rate * 100)}%`), align: "right" },
-    { h: "Scored", w: 80, get: (r) => `${r.scored ?? 0}/${r.outputs ?? 0}`, align: "right" },
+    { h: "Votes", w: 80, get: (r) => `${r.votes ?? 0} (${r.scored ?? 0}/${r.outputs ?? 0})`, align: "right" },
     { h: "Success", w: 70, get: (r) => (r.gens ? `${Math.round((r.ok / r.gens) * 100)}%` : "—"), align: "right" },
     { h: "Avg time", w: 80, get: (r) => (r.latency_ms == null ? "—" : `${(r.latency_ms / 1000).toFixed(1)}s`), align: "right" },
     { h: "$ / image", w: 80, get: (r) => usd(r.cost_per_image), align: "right" },
@@ -259,7 +276,7 @@ export async function buildReport(opts: { category?: string }): Promise<Buffer> 
       const refFile = p.input_image ?? (p.input_mode === "reference" ? p.product_ref_image : null);
       const rx = M + PROMPT_W + 8;
       const refBox = Math.min(REF_W - 16, boxH);
-      const refImg = await thumb(refFile, UPLOAD_DIR, 360);
+      const refImg = await thumb(refFile, "uploads", 360);
       if (refImg) {
         doc.rect(rx, ry + 8, refBox, refBox).fill(C.panel);
         doc.image(refImg, rx, ry + 8, { fit: [refBox, refBox], align: "center", valign: "center" });
@@ -285,40 +302,41 @@ export async function buildReport(opts: { category?: string }): Promise<Buffer> 
           doc.font("r").fontSize(8).fillColor(C.faint).text(c.status, x, by + boxH / 2 - 4, { width: boxW, align: "center" });
           continue;
         }
-        const img = c.media_type === "video" ? null : await thumb(c.local_path, MEDIA_DIR);
+        const img = c.media_type === "video" ? null : await thumb(c.local_path, "media");
         if (img) doc.image(img, x, by, { fit: [boxW, boxH], align: "center", valign: "center" });
         else doc.font("r").fontSize(8).fillColor(C.faint).text(c.media_type === "video" ? "video" : "image not downloaded", x, by + boxH / 2 - 4, { width: boxW, align: "center" });
 
         if (c.ref_image) {
-          const ins = await thumb(c.ref_image, UPLOAD_DIR, 160);
+          const ins = await thumb(c.ref_image, "uploads", 160);
           if (ins) {
             const s = Math.min(boxW, boxH) * 0.26;
             doc.rect(x + 3, by + 3, s, s).fill("#ffffff");
             doc.image(ins, x + 4, by + 4, { fit: [s - 2, s - 2], align: "center", valign: "center" });
           }
         }
-        if (c.keep != null) {
-          const label = c.keep ? "KEEP" : "REJECT";
-          const bw = c.keep ? 30 : 40;
-          doc.roundedRect(x + boxW - bw - 4, by + boxH - 16, bw, 12, 2).fill(c.keep ? C.good : C.bad);
+        // team tally badge: keep · reject
+        if (c.keep_yes || c.keep_no) {
+          const label = `KEEP ${c.keep_yes} · REJ ${c.keep_no}`;
+          const bw = 66;
+          const tone = c.keep_yes > c.keep_no ? C.good : c.keep_no > c.keep_yes ? C.bad : C.warn;
+          doc.roundedRect(x + boxW - bw - 4, by + boxH - 16, bw, 12, 2).fill(tone);
           doc.font("b").fontSize(7).fillColor("#ffffff").text(label, x + boxW - bw - 4, by + boxH - 13.5, { width: bw, align: "center", lineBreak: false });
         }
 
-        const ov = cellOverall(c);
         const ty = by + boxH + 5;
-        doc.font("b").fontSize(8).fillColor(C.ink).text(ov == null ? "not scored" : `${ov.toFixed(1)} / 5`, x, ty, { width: boxW / 2, lineBreak: false });
-        doc.font("r").fontSize(8).fillColor(C.muted).text(usd(c.credit_cost), x + boxW / 2, ty, { width: boxW / 2, align: "right", lineBreak: false });
-        const parts = [
-          c.text_accuracy != null ? `T ${c.text_accuracy}` : "",
-          c.realism != null ? `R ${c.realism}` : "",
-          c.color != null ? `C ${c.color}` : "",
-        ].filter(Boolean);
-        if (parts.length || c.notes) {
-          doc
-            .font("r")
-            .fontSize(7)
-            .fillColor(C.muted)
-            .text(clean([parts.join(" · "), c.notes ?? ""].filter(Boolean).join("  —  ")), x, ty + 11, { width: boxW, height: 18, ellipsis: true });
+        doc
+          .font("b")
+          .fontSize(8)
+          .fillColor(C.ink)
+          .text(c.overall == null ? "no votes" : `${Number(c.overall).toFixed(1)} / 5 · ${c.votes_n} vote${c.votes_n === 1 ? "" : "s"}`, x, ty, {
+            width: (boxW * 2) / 3,
+            lineBreak: false,
+          });
+        doc.font("r").fontSize(8).fillColor(C.muted).text(usd(c.credit_cost), x + (boxW * 2) / 3, ty, { width: boxW / 3, align: "right", lineBreak: false });
+        const vs = votesByOutput.get(c.output_id) ?? [];
+        if (vs.length) {
+          const line = vs.map((v) => `${v.name.split(" ")[0]} ${v.keep === 1 ? "✓" : v.keep === 0 ? "✗" : "·"}${v.notes ? ` "${v.notes}"` : ""}`).join("  ");
+          doc.font("r").fontSize(7).fillColor(C.muted).text(clean(line), x, ty + 11, { width: boxW, height: 18, ellipsis: true });
         }
       }
       ry += rowH;

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { AlertTriangle, Ban, Check, Clock, Coins, Loader2, Maximize2, RotateCw, Sparkles } from "lucide-react";
-import { ACTIVE, aspectCss, fmtCost, fmtMs, type Generation, type ModelInfo, type Output } from "@/lib/client";
+import { ACTIVE, aspectCss, fmtCost, fmtMs, tally, type Generation, type ModelInfo, type Output } from "@/lib/client";
 import { ScoreControls } from "./ScoreControls";
 import { Media } from "./Lightbox";
 
@@ -62,15 +62,7 @@ export function ModelCard({
             >
               <Maximize2 size={13} />
             </button>
-            {cur.keep != null && (
-              <span
-                className={`absolute right-2 bottom-2 rounded-md px-1.5 py-0.5 text-[10px] font-bold ${
-                  cur.keep ? "bg-good text-black" : "bg-bad text-black"
-                }`}
-              >
-                {cur.keep ? "KEEP" : "REJECT"}
-              </span>
-            )}
+            <TallyBadge output={cur} className="absolute right-2 bottom-2" />
             {gen?.mock ? (
               <span className="absolute bottom-2 left-2 rounded bg-warn/90 px-1.5 py-0.5 text-[10px] font-bold text-black">MOCK</span>
             ) : null}
@@ -112,7 +104,12 @@ export function ModelCard({
               className={`relative h-11 w-11 shrink-0 overflow-hidden rounded-md border-2 ${i === active ? "border-accent" : "border-transparent opacity-60 hover:opacity-100"}`}
             >
               <Media o={o} className="h-full w-full object-cover" />
-              {o.keep != null && <span className={`absolute right-0.5 bottom-0.5 h-2 w-2 rounded-full ${o.keep ? "bg-good" : "bg-bad"}`} />}
+              {(() => {
+                const t = tally(o.votes);
+                return t.keep + t.reject > 0 ? (
+                  <span className={`absolute right-0.5 bottom-0.5 h-2 w-2 rounded-full ${t.keep > t.reject ? "bg-good" : t.reject > t.keep ? "bg-bad" : "bg-warn"}`} />
+                ) : null;
+              })()}
             </button>
           ))}
         </div>
@@ -160,4 +157,19 @@ function StatusPill({ gen }: { gen: Generation | null }) {
   if (gen.status === "complete") return <span className={`${base} bg-good/10 text-good`}>Done</span>;
   if (gen.status === "failed") return <span className={`${base} bg-bad/10 text-bad`}>Failed</span>;
   return <span className={`${base} bg-panel-3 text-faint`}>Skipped</span>;
+}
+
+/** Team verdict on an output: "KEEP 3·1" (green when keeps lead, red when rejects lead, amber on a tie). */
+export function TallyBadge({ output, className = "" }: { output: Pick<Output, "votes">; className?: string }) {
+  const t = tally(output.votes);
+  if (t.keep + t.reject === 0) return null;
+  const tone = t.keep > t.reject ? "bg-good" : t.reject > t.keep ? "bg-bad" : "bg-warn";
+  return (
+    <span
+      title={`Team: ${t.keep} keep, ${t.reject} reject${t.avg != null ? `, average score ${t.avg.toFixed(1)}` : ""}`}
+      className={`rounded-md px-1.5 py-0.5 text-[10px] font-bold text-black ${tone} ${className}`}
+    >
+      {t.keep > t.reject ? "KEEP" : t.reject > t.keep ? "REJECT" : "SPLIT"} {t.keep}·{t.reject}
+    </span>
+  );
 }

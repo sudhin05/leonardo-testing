@@ -1,9 +1,8 @@
 import path from "node:path";
 import Papa from "papaparse";
 import readXlsxFile from "read-excel-file/node";
-import { db } from "./db";
+import { all, get, run } from "./db";
 import { ASPECT_RATIOS } from "./models";
-import { saveImageBuffer } from "./images";
 
 /**
  * Prompt-sheet importer. Canonical format: docs/PROMPT_SHEET_FORMAT.md
@@ -12,11 +11,15 @@ import { saveImageBuffer } from "./images";
  *
  * Only `prompt` is required. Headers are case/spacing-insensitive and a few aliases are accepted
  * (e.g. Tag → category, address → ref_image) so older sheets still load.
+ *
+ * Reference images are uploaded first, one request each (hosted limits cap a request at ~4.5 MB);
+ * this importer receives their original names and the names they were stored under.
  */
 
 export type SheetRow = Record<string, string>;
-export type ImageFile = { name: string; data: Buffer };
-export type ImportResult = { inserted: number; productsCreated: number; imagesSaved: number; warnings: string[] };
+/** An already-stored reference image: the file name the sheet uses, and the stored upload name. */
+export type StoredImage = { name: string; stored: string };
+export type ImportResult = { inserted: number; productsCreated: number; imagesUsed: number; warnings: string[] };
 
 const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
 const stemOf = (f: string) => norm(path.basename(f, path.extname(f)));
@@ -94,35 +97,39 @@ export function inferAspect(explicit: string, ...texts: string[]): { ar: string;
 }
 
 /** Find an uploaded image for a ref_image cell: exact file name first, then name without extension. */
-function matchImage(ref: string, images: ImageFile[]) {
+function matchImage(ref: string, images: StoredImage[]) {
   const want = path.basename(ref.replace(/\\/g, "/")).toLowerCase();
   return images.find((i) => path.basename(i.name).toLowerCase() === want) ?? images.find((i) => stemOf(i.name) === stemOf(want));
 }
 
+/** Delete a test run's prompts and products (and everything under them). Explicit, since remote SQLite connections don't keep FK cascades on. */
+export async function clearRunContent(runId: number) {
+  const gens = `SELECT g.id FROM generations g JOIN prompts p ON p.id = g.prompt_id WHERE p.test_run_id = ?`;
+  await run(`DELETE FROM votes WHERE output_id IN (SELECT id FROM outputs WHERE generation_id IN (${gens}))`, [runId]);
+  await run(`DELETE FROM outputs WHERE generation_id IN (${gens})`, [runId]);
+  await run(`DELETE FROM generations WHERE prompt_id IN (SELECT id FROM prompts WHERE test_run_id = ?)`, [runId]);
+  await run(`DELETE FROM runs WHERE prompt_id IN (SELECT id FROM prompts WHERE test_run_id = ?)`, [runId]);
+  await run("DELETE FROM prompts WHERE test_run_id = ?", [runId]);
+  await run("DELETE FROM products WHERE test_run_id = ?", [runId]);
+}
+
 export async function importPrompts(
+  runId: number,
+  userId: number,
   rowsRaw: SheetRow[],
-  images: ImageFile[],
+  images: StoredImage[],
   opts: { replace?: boolean; source?: string } = {},
 ): Promise<ImportResult> {
-  const d = db();
   const warnings: string[] = [];
   let inserted = 0;
   let productsCreated = 0;
-  let imagesSaved = 0;
+  const used = new Set<string>();
 
-  if (opts.replace) {
-    d.prepare("DELETE FROM prompts").run();
-    d.prepare("DELETE FROM products WHERE id NOT IN (SELECT DISTINCT product_id FROM prompts WHERE product_id IS NOT NULL)").run();
-  }
+  if (opts.replace) await clearRunContent(runId);
 
-  const findProduct = d.prepare("SELECT id FROM products WHERE lower(sku) = lower(?)");
-  const insProduct = d.prepare("INSERT INTO products (sku, name, category, notes) VALUES (?, ?, ?, '')");
-  const setProductImg = d.prepare("UPDATE products SET ref_image = ?, ref_leonardo_id = NULL WHERE id = ?");
-  const insPrompt = d.prepare(
-    `INSERT INTO prompts (test_id, ad_category, product_id, prompt, aspect_ratio, criteria, input_mode, input_image, kind, source)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  const existingIds = new Set(
+    (await all<{ test_id: string }>("SELECT test_id FROM prompts WHERE test_run_id = ?", [runId])).map((r) => r.test_id.toLowerCase()),
   );
-  const existingIds = new Set((d.prepare("SELECT test_id FROM prompts").all() as { test_id: string }[]).map((r) => r.test_id.toLowerCase()));
   const nextId = () => {
     let n = 1;
     while (existingIds.has(`t-${String(n).padStart(2, "0")}`)) n++;
@@ -131,17 +138,7 @@ export async function importPrompts(
     return id;
   };
 
-  // each distinct image file is stored once per import, then shared by every row that names it
-  const saved = new Map<string, string>();
   const productImage = new Map<number, string>(); // product id → image set during this import
-  const storeImage = async (img: ImageFile) => {
-    const key = img.name.toLowerCase();
-    if (!saved.has(key)) {
-      saved.set(key, await saveImageBuffer(img.data, img.name, "ref"));
-      imagesSaved++;
-    }
-    return saved.get(key)!;
-  };
 
   const rows = rowsRaw.map((r) => mapRow(r, "prompts"));
   if (rows.length && !rows.some((r) => r.prompt)) {
@@ -156,12 +153,12 @@ export async function importPrompts(
       continue;
     }
 
-    // test id (unique)
+    // test id (unique within this test run)
     let testId = r.test_id || nextId();
     if (r.test_id) {
       if (existingIds.has(testId.toLowerCase())) {
         const alt = nextId();
-        warnings.push(`${line}: test_id "${testId}" already exists — imported as ${alt}`);
+        warnings.push(`${line}: test_id "${testId}" already exists in this test run — imported as ${alt}`);
         testId = alt;
       } else existingIds.add(testId.toLowerCase());
     }
@@ -171,24 +168,28 @@ export async function importPrompts(
     if (r.ref_image) {
       const img = matchImage(r.ref_image, images);
       if (img) {
-        try {
-          storedImg = await storeImage(img);
-        } catch (e) {
-          warnings.push(`${line}: ${(e as Error).message}`);
-        }
+        storedImg = img.stored;
+        used.add(img.stored);
       } else {
-        warnings.push(`${line}: image "${r.ref_image}" not in the uploaded images — upload it on the prompt before running`);
+        warnings.push(`${line}: image "${r.ref_image}" not among the uploaded images — upload it on the prompt before running`);
       }
     }
 
-    // product: explicit code, else derived from the image name so rows sharing an image share a product
+    // product (per test run): explicit code, else derived from the image name so rows sharing an image share a product
     let productId: number | null = null;
     const productKey = r.product || (r.ref_image ? path.basename(r.ref_image, path.extname(r.ref_image)) : "");
     if (productKey) {
-      const hit = findProduct.get(productKey) as { id: number } | undefined;
+      const hit = await get<{ id: number }>("SELECT id FROM products WHERE test_run_id = ? AND lower(sku) = lower(?)", [runId, productKey]);
       if (hit) productId = hit.id;
       else {
-        productId = Number(insProduct.run(productKey, r.product_name || productKey, r.category ?? "").lastInsertRowid);
+        productId = (
+          await run("INSERT INTO products (test_run_id, sku, name, category, notes) VALUES (?, ?, ?, ?, '')", [
+            runId,
+            productKey,
+            r.product_name || productKey,
+            r.category ?? "",
+          ])
+        ).id;
         productsCreated++;
       }
     }
@@ -198,7 +199,7 @@ export async function importPrompts(
     if (storedImg && productId) {
       const already = productImage.get(productId);
       if (!already) {
-        setProductImg.run(storedImg, productId);
+        await run("UPDATE products SET ref_image = ?, ref_leonardo_id = NULL WHERE id = ?", [storedImg, productId]);
         productImage.set(productId, storedImg);
       } else if (already !== storedImg) promptImg = storedImg;
     } else if (storedImg) promptImg = storedImg;
@@ -209,30 +210,34 @@ export async function importPrompts(
     }
     const isRef = !!r.ref_image || /\[input:/i.test(r.prompt);
 
-    insPrompt.run(
-      testId,
-      r.category ?? "",
-      productId,
-      r.prompt,
-      ar,
-      r.criteria ?? "",
-      isRef ? "reference" : "text",
-      promptImg,
-      /video/i.test(r.output ?? "") ? "video" : "image",
-      opts.source ?? "",
+    await run(
+      `INSERT INTO prompts (test_run_id, test_id, ad_category, product_id, prompt, aspect_ratio, criteria, input_mode, input_image, kind, source, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        runId,
+        testId,
+        r.category ?? "",
+        productId,
+        r.prompt,
+        ar,
+        r.criteria ?? "",
+        isRef ? "reference" : "text",
+        promptImg,
+        /video/i.test(r.output ?? "") ? "video" : "image",
+        opts.source ?? "",
+        userId,
+      ],
     );
     inserted++;
   }
-  return { inserted, productsCreated, imagesSaved, warnings };
+  return { inserted, productsCreated, imagesUsed: used.size, warnings };
 }
 
-export async function importProducts(rowsRaw: SheetRow[], images: ImageFile[], opts: { replace?: boolean } = {}): Promise<ImportResult> {
-  const d = db();
+export async function importProducts(runId: number, rowsRaw: SheetRow[], images: StoredImage[], opts: { replace?: boolean } = {}): Promise<ImportResult> {
   const warnings: string[] = [];
   let inserted = 0;
-  let imagesSaved = 0;
-  if (opts.replace) d.prepare("DELETE FROM products").run();
-  const ins = d.prepare("INSERT INTO products (sku, name, category, notes, ref_image) VALUES (?, ?, ?, ?, ?)");
+  let imagesUsed = 0;
+  if (opts.replace) await run("DELETE FROM products WHERE test_run_id = ?", [runId]);
   for (const [i, raw] of rowsRaw.entries()) {
     const r = mapRow(raw, "products");
     if (!r.sku && !r.name) continue;
@@ -240,12 +245,19 @@ export async function importProducts(rowsRaw: SheetRow[], images: ImageFile[], o
     if (r.ref_image) {
       const f = matchImage(r.ref_image, images);
       if (f) {
-        img = await saveImageBuffer(f.data, f.name, "product");
-        imagesSaved++;
+        img = f.stored;
+        imagesUsed++;
       } else warnings.push(`Row ${i + 2}: image "${r.ref_image}" not uploaded`);
     }
-    ins.run(r.sku || r.name, r.name || r.sku, r.category ?? "", r.notes ?? "", img);
+    await run("INSERT INTO products (test_run_id, sku, name, category, notes, ref_image) VALUES (?, ?, ?, ?, ?, ?)", [
+      runId,
+      r.sku || r.name,
+      r.name || r.sku,
+      r.category ?? "",
+      r.notes ?? "",
+      img,
+    ]);
     inserted++;
   }
-  return { inserted, productsCreated: inserted, imagesSaved, warnings };
+  return { inserted, productsCreated: inserted, imagesUsed, warnings };
 }

@@ -26,6 +26,8 @@ export type Prompt = {
   done: number;
   running: number;
   models_done: number;
+  votes?: number;
+  created_by_name?: string | null;
 };
 
 export type ModelInfo = {
@@ -43,6 +45,19 @@ export type ModelInfo = {
   sample: unknown;
 };
 
+export type Vote = {
+  output_id: number;
+  user_id: number;
+  name: string;
+  text_accuracy: number | null;
+  realism: number | null;
+  color: number | null;
+  keep: number | null;
+  notes: string | null;
+  updated_at: string;
+};
+
+/** An output; text_accuracy…notes are the signed-in person's own vote, `votes` is everyone's. */
 export type Output = {
   id: number;
   generation_id: number;
@@ -55,13 +70,53 @@ export type Output = {
   color: number | null;
   keep: number | null;
   notes: string | null;
+  votes?: Vote[];
 };
+
+export type TestRun = {
+  id: number;
+  name: string;
+  notes: string;
+  created_at: string;
+  created_by_name: string | null;
+  prompts: number;
+  generations: number;
+  outputs: number;
+  votes: number;
+  spent: number;
+  last_activity: string | null;
+};
+
+export type Me = { id: number; name: string };
+
+let meCache: Promise<Me | null> | null = null;
+/** The signed-in team member (cached for the page's lifetime). */
+export function getMe(): Promise<Me | null> {
+  meCache ??= fetch("/api/auth/me", { cache: "no-store" })
+    .then((r) => (r.ok ? (r.json() as Promise<Me>) : null))
+    .catch(() => null);
+  return meCache;
+}
+
+/** Keep / reject counts from a list of votes. */
+export function tally(votes: Vote[] | undefined) {
+  const v = votes ?? [];
+  const keep = v.filter((x) => x.keep === 1).length;
+  const reject = v.filter((x) => x.keep === 0).length;
+  const scores = v.flatMap((x) => [x.text_accuracy, x.realism, x.color].filter((s): s is number => s != null));
+  return { n: v.length, keep, reject, avg: scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null };
+}
+
+export function initials(name: string) {
+  const parts = name.trim().split(/\s+/);
+  return ((parts[0]?.[0] ?? "") + (parts[1]?.[0] ?? parts[0]?.[1] ?? "")).toUpperCase();
+}
 
 export type Generation = {
   id: number;
   run_id: number;
   model_key: string;
-  status: "queued" | "submitting" | "pending" | "complete" | "failed" | "skipped";
+  status: "queued" | "submitting" | "pending" | "completing" | "complete" | "failed" | "skipped";
   error: string | null;
   credit_cost: number | null;
   cost_source: "api" | "measured" | "estimate" | "mock" | null;
@@ -71,13 +126,14 @@ export type Generation = {
   mock: number;
   created_at: string;
   run_created_at: string;
+  run_by?: string | null;
   latency_ms: number | null;
   quantity: number;
   params: Record<string, unknown>;
   outputs: Output[];
 };
 
-export const ACTIVE = new Set(["queued", "submitting", "pending"]);
+export const ACTIVE = new Set(["queued", "submitting", "pending", "completing"]);
 
 export async function api<T = unknown>(url: string, init?: RequestInit & { json?: unknown }): Promise<T> {
   const res = await fetch(url, {

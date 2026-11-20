@@ -1,9 +1,13 @@
-import { bad, boot, ok } from "@/lib/server";
+import { after } from "next/server";
+import { get, run } from "@/lib/db";
+import { bad, handle, me, ok } from "@/lib/server";
 import { buildRequest, type AspectRatio } from "@/lib/models";
 import { getModelDef, getOverrides } from "@/lib/registry";
 import { leonardoIdFor } from "@/lib/refs";
+import { tick } from "@/lib/worker";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 type PromptRow = {
   id: number;
@@ -11,17 +15,15 @@ type PromptRow = {
   aspect_ratio: string;
   input_mode: string;
   input_image: string | null;
-  input_leonardo_id: string | null;
   kind: string;
   product_id: number | null;
   ref_image: string | null;
-  ref_leonardo_id: string | null;
   test_id: string;
 };
 
-/** Queue generations: every selected prompt × every selected model. The worker submits them. */
-export async function POST(req: Request) {
-  const d = boot();
+/** Queue generations: every selected prompt × every selected model. Worker ticks submit them. */
+export const POST = handle(async (req: Request) => {
+  const user = await me();
   const b = (await req.json()) as { promptIds: number[]; modelKeys: string[]; quantity?: number };
   if (!b.promptIds?.length) return bad("Pick at least one prompt");
   if (!b.modelKeys?.length) return bad("Pick at least one model");
@@ -29,16 +31,11 @@ export async function POST(req: Request) {
   const warnings: string[] = [];
   let queued = 0;
 
-  const getPrompt = d.prepare(
-    `SELECT p.*, pr.ref_image, pr.ref_leonardo_id FROM prompts p LEFT JOIN products pr ON pr.id = p.product_id WHERE p.id = ?`,
-  );
-  const insRun = d.prepare("INSERT INTO runs (prompt_id, prompt_text, aspect_ratio, quantity) VALUES (?, ?, ?, ?)");
-  const insGen = d.prepare(
-    "INSERT INTO generations (run_id, prompt_id, model_key, status, request, width, height, error, ref_image) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-  );
-
   for (const pid of b.promptIds) {
-    const p = getPrompt.get(pid) as unknown as PromptRow | undefined;
+    const p = await get<PromptRow>(
+      "SELECT p.*, pr.ref_image FROM prompts p LEFT JOIN products pr ON pr.id = p.product_id WHERE p.id = ?",
+      [pid],
+    );
     if (!p) continue;
 
     // Resolve the reference image (prompt-level upload wins over the product's image), uploading once and caching the id.
@@ -59,11 +56,18 @@ export async function POST(req: Request) {
       }
     }
 
-    const run = insRun.run(p.id, p.prompt, p.aspect_ratio, quantity);
-    const runId = Number(run.lastInsertRowid);
+    const runId = (
+      await run("INSERT INTO runs (prompt_id, prompt_text, aspect_ratio, quantity, created_by) VALUES (?, ?, ?, ?, ?)", [
+        p.id,
+        p.prompt,
+        p.aspect_ratio,
+        quantity,
+        user.uid,
+      ])
+    ).id;
 
     for (const key of b.modelKeys) {
-      const def = getModelDef(key);
+      const def = await getModelDef(key);
       if (!def) {
         warnings.push(`Unknown model ${key}`);
         continue;
@@ -75,16 +79,27 @@ export async function POST(req: Request) {
         aspectRatio: p.aspect_ratio as AspectRatio,
         quantity,
         referenceImageId: refId,
-        overrides: getOverrides(key),
+        overrides: await getOverrides(key),
       });
       const params = request.parameters as { width?: number; height?: number };
-      if (refId && !def.refGuidance) {
-        insGen.run(runId, p.id, key, "skipped", JSON.stringify(request), params.width ?? null, params.height ?? null, "Model has no image-reference input", null);
-        continue;
-      }
-      insGen.run(runId, p.id, key, "queued", JSON.stringify(request), params.width ?? null, params.height ?? null, null, refId ? refFile : null);
-      queued++;
+      const skip = !!refId && !def.refGuidance;
+      await run(
+        "INSERT INTO generations (run_id, prompt_id, model_key, status, request, width, height, error, ref_image) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+          runId,
+          p.id,
+          key,
+          skip ? "skipped" : "queued",
+          JSON.stringify(request),
+          params.width ?? null,
+          params.height ?? null,
+          skip ? "Model has no image-reference input" : null,
+          skip ? null : refId ? refFile : null,
+        ],
+      );
+      if (!skip) queued++;
     }
   }
+  if (queued) after(() => tick());
   return ok({ queued, warnings });
-}
+});

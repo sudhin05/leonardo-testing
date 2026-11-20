@@ -53,7 +53,15 @@ export default function ComparePage() {
   const modelMap = useMemo(() => new Map(models.map((m) => [m.key, m])), [models]);
 
   // ── loading ──
-  const loadPrompts = useCallback(() => api<Prompt[]>("/api/prompts").then(setPrompts), []);
+  const [loaded, setLoaded] = useState(false);
+  const loadPrompts = useCallback(
+    () =>
+      api<Prompt[]>("/api/prompts").then((p) => {
+        setPrompts(p);
+        setLoaded(true);
+      }),
+    [],
+  );
   const loadResults = useCallback(async () => {
     if (!pid) return setResults([]);
     setResults(await api<Generation[]>(`/api/results?promptId=${pid}`));
@@ -71,7 +79,8 @@ export default function ComparePage() {
   }, [loadPrompts]);
 
   useEffect(() => {
-    if (!pid && prompts.length) setPid(prompts[0].id);
+    // also covers a prompt id from another test run (old link or after switching runs)
+    if (prompts.length && (!pid || !prompts.some((p) => p.id === pid))) setPid(prompts[0].id);
   }, [prompts, pid]);
 
   useEffect(() => {
@@ -105,16 +114,20 @@ export default function ComparePage() {
     });
   };
 
-  // ── polling while anything is generating ──
+  // ── polling: fast while anything is generating, slow otherwise (to pick up teammates' votes and runs) ──
   const anyActive = results.some((g) => ACTIVE.has(g.status));
   useEffect(() => {
-    if (!anyActive && Date.now() - kickRef.current > 8000) return;
-    const t = setInterval(() => {
-      void loadResults();
-      void loadPrompts();
-    }, 2000);
+    const fast = anyActive || Date.now() - kickRef.current < 8000;
+    const t = setInterval(
+      () => {
+        if (document.hidden || lb) return;
+        void loadResults();
+        void loadPrompts();
+      },
+      fast ? 2500 : 15000,
+    );
     return () => clearInterval(t);
-  }, [anyActive, loadResults, loadPrompts]);
+  }, [anyActive, loadResults, loadPrompts, lb]);
 
   // ── derived ──
   const visibleModels = useMemo(() => {
@@ -309,7 +322,11 @@ export default function ComparePage() {
           ))}
           {!prompts.length && (
             <div className="p-4 text-sm text-muted">
-              No prompts yet. <Link href="/library" className="text-accent">Add or import a prompt sheet →</Link>
+              No prompts in this test run yet. <Link href="/library?import=1" className="text-accent">Import a prompt sheet →</Link>
+              <br />
+              <Link href="/runs" className="mt-2 inline-block text-accent">
+                Open another test run →
+              </Link>
             </div>
           )}
         </div>
@@ -561,7 +578,21 @@ export default function ComparePage() {
           </div>
         ) : (
           <div className="grid h-full place-items-center text-muted">
-            <Loader2 className="animate-spin" />
+            {loaded && !prompts.length ? (
+              <div className="max-w-sm space-y-3 text-center text-sm">
+                <p>This test run has no prompts yet.</p>
+                <div className="flex justify-center gap-2">
+                  <Link href="/library?import=1" className="rounded-lg bg-accent px-3 py-2 font-semibold text-white">
+                    Import a prompt sheet
+                  </Link>
+                  <Link href="/runs" className="rounded-lg border border-line px-3 py-2 hover:text-ink">
+                    Other test runs
+                  </Link>
+                </div>
+              </div>
+            ) : (
+              <Loader2 className="animate-spin" />
+            )}
           </div>
         )}
       </section>

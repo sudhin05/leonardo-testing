@@ -1,21 +1,26 @@
-import { db } from "./db";
+import { all, run } from "./db";
 import { isMock, uploadImage } from "./leonardo";
-import { uploadPath } from "./server";
+import { readFile } from "./storage";
 
 /**
  * Leonardo image id for a stored reference file, uploading it once and caching the id on the
  * product/prompt that owns the file. Mock ids are never cached and cached mock ids are never sent live.
  */
 export async function leonardoIdFor(file: string): Promise<string> {
-  const d = db();
   if (isMock()) return `mock-upload-${file}`;
-  const cached =
-    (d.prepare("SELECT ref_leonardo_id AS id FROM products WHERE ref_image = ? AND ref_leonardo_id IS NOT NULL").get(file) as { id: string } | undefined)?.id ??
-    (d.prepare("SELECT input_leonardo_id AS id FROM prompts WHERE input_image = ? AND input_leonardo_id IS NOT NULL").get(file) as { id: string } | undefined)?.id;
-  if (cached && !cached.startsWith("mock-")) return cached;
-  const id = await uploadImage(uploadPath(file));
-  d.prepare("UPDATE products SET ref_leonardo_id = ? WHERE ref_image = ?").run(id, file);
-  d.prepare("UPDATE prompts SET input_leonardo_id = ? WHERE input_image = ?").run(id, file);
+  const cached = (
+    await all<{ id: string }>(
+      `SELECT ref_leonardo_id AS id FROM products WHERE ref_image = ? AND ref_leonardo_id IS NOT NULL
+       UNION ALL SELECT input_leonardo_id AS id FROM prompts WHERE input_image = ? AND input_leonardo_id IS NOT NULL`,
+      [file, file],
+    )
+  ).find((r) => r.id && !r.id.startsWith("mock-"))?.id;
+  if (cached) return cached;
+  const data = await readFile("uploads", file);
+  if (!data) throw new Error(`Reference image ${file} is missing from storage`);
+  const id = await uploadImage(data, file);
+  await run("UPDATE products SET ref_leonardo_id = ? WHERE ref_image = ?", [id, file]);
+  await run("UPDATE prompts SET input_leonardo_id = ? WHERE input_image = ?", [id, file]);
   return id;
 }
 

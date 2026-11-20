@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Archive, FileUp, ImagePlus, Pencil, Plus, Trash2, Upload, X } from "lucide-react";
+import Link from "next/link";
+import { FileUp, FolderPlus, ImagePlus, Pencil, Plus, Trash2, Upload, X } from "lucide-react";
 import { api, uploadSrc, type Product, type Prompt } from "@/lib/client";
 
 const ARS = ["1:1", "4:5", "9:16", "16:9", "2:3", "3:2", "3:4", "4:3"];
@@ -16,7 +17,6 @@ export default function LibraryPage() {
   const [editProduct, setEditProduct] = useState<Partial<Product> | null>(null);
   const [importing, setImporting] = useState<"prompts" | "products" | null>(null);
   const [msg, setMsg] = useState("");
-  const [newRound, setNewRound] = useState(false);
 
   const load = useCallback(async () => {
     const [p, pr] = await Promise.all([api<Prompt[]>("/api/prompts"), api<Product[]>("/api/products")]);
@@ -27,9 +27,10 @@ export default function LibraryPage() {
 
   useEffect(() => {
     load().then((p) => {
-      const id = Number(new URLSearchParams(window.location.search).get("edit"));
-      const hit = p.find((x) => x.id === id);
+      const sp = new URLSearchParams(window.location.search);
+      const hit = p.find((x) => x.id === Number(sp.get("edit")));
       if (hit) setEdit(hit);
+      if (sp.get("import")) setImporting("prompts");
     });
   }, [load]);
 
@@ -71,7 +72,10 @@ export default function LibraryPage() {
       <div className="flex flex-wrap items-end gap-3">
         <div>
           <h1 className="text-xl font-semibold">Library</h1>
-          <p className="text-sm text-muted">The prompt sheet and the products (SKUs) it tests. Import your team&apos;s sheet as CSV.</p>
+          <p className="text-sm text-muted">
+            Prompts and products in the current test run. Import a sheet or add prompts here to extend this run; start a new test run for a separate
+            batch.
+          </p>
         </div>
         <div className="ml-auto flex rounded-lg border border-line bg-panel p-0.5 text-sm">
           {(["prompts", "products"] as const).map((t) => (
@@ -112,13 +116,13 @@ export default function LibraryPage() {
         >
           <FileUp size={15} /> Import sheet
         </button>
-        <button
-          onClick={() => setNewRound(true)}
-          title="Archive everything from the current round and start empty"
+        <Link
+          href="/runs?new=1"
+          title="Start a separate test run instead of adding to this one"
           className="ml-auto flex items-center gap-1.5 rounded-lg border border-line px-3 py-2 text-sm text-muted hover:border-line-2 hover:text-ink"
         >
-          <Archive size={15} /> New round
-        </button>
+          <FolderPlus size={15} /> New test run
+        </Link>
       </div>
 
       {tab === "prompts" ? (
@@ -236,16 +240,6 @@ export default function LibraryPage() {
           onClose={() => setImporting(null)}
           onDone={(m) => {
             setImporting(null);
-            setMsg(m);
-            void load();
-          }}
-        />
-      )}
-      {newRound && (
-        <NewRoundDialog
-          onClose={() => setNewRound(false)}
-          onDone={(m) => {
-            setNewRound(false);
             setMsg(m);
             void load();
           }}
@@ -397,49 +391,69 @@ function ProductForm({ draft, onCancel, onSave }: { draft: Partial<Product>; onC
   );
 }
 
-type ImportResult = { inserted: number; productsCreated: number; imagesSaved: number; warnings: string[] };
+type ImportResult = { inserted: number; productsCreated: number; imagesUsed: number; warnings: string[] };
+type Stored = { name: string; stored: string };
 
+/**
+ * Import into the current test run. Images go up one per request first (hosted limits cap a request at ~4.5 MB),
+ * then the sheet is sent with the list of stored image names.
+ */
 function ImportDialog({ kind, onClose, onDone }: { kind: "prompts" | "products"; onClose: () => void; onDone: (msg: string) => void }) {
   const [sheet, setSheet] = useState<File | null>(null);
   const [images, setImages] = useState<File[]>([]);
   const [csv, setCsv] = useState("");
   const [replace, setReplace] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState("");
   const [err, setErr] = useState("");
 
   const submit = async () => {
-    setBusy(true);
     setErr("");
+    const stored: Stored[] = [];
+    const failed: string[] = [];
     try {
+      for (const [i, f] of images.entries()) {
+        setProgress(`Uploading image ${i + 1} of ${images.length}: ${f.name}`);
+        if (f.size > 4.4 * 1024 * 1024) {
+          failed.push(`${f.name} is ${(f.size / 1048576).toFixed(1)} MB — over the 4.4 MB upload limit; resize it and upload it on the prompt`);
+          continue;
+        }
+        const fd = new FormData();
+        fd.append("file", f, f.name);
+        try {
+          stored.push(await api<Stored>("/api/import/image", { method: "POST", body: fd }));
+        } catch (e) {
+          failed.push((e as Error).message);
+        }
+      }
+      setProgress("Importing sheet…");
       const fd = new FormData();
       fd.append("kind", kind);
       fd.append("replace", String(replace));
       if (sheet) fd.append("sheet", sheet);
       else fd.append("csv", csv);
-      for (const f of images) fd.append("images", f, f.name);
+      fd.append("images", JSON.stringify(stored));
       const r = await api<ImportResult>("/api/import", { method: "POST", body: fd });
+      const warnings = [...failed, ...r.warnings];
       onDone(
-        `Imported ${r.inserted} ${kind}, ${r.imagesSaved} reference image${r.imagesSaved === 1 ? "" : "s"}` +
+        `Imported ${r.inserted} ${kind} with ${r.imagesUsed} reference image${r.imagesUsed === 1 ? "" : "s"}` +
           (r.productsCreated && kind === "prompts" ? `, ${r.productsCreated} new product${r.productsCreated === 1 ? "" : "s"}` : "") +
           "." +
-          (r.warnings.length ? " " + r.warnings.join(" · ") : ""),
+          (warnings.length ? " " + warnings.join(" · ") : ""),
       );
     } catch (e) {
-      setErr((e as Error).message);
-    } finally {
-      setBusy(false);
+      setErr([...failed, (e as Error).message].join(" · "));
+      setProgress("");
     }
   };
 
   return (
-    <Modal title={`Import ${kind}`} onClose={onClose}>
+    <Modal title={`Import ${kind} into this test run`} onClose={onClose}>
       <p className="mb-4 text-sm text-muted">
         {kind === "prompts" ? (
           <>
-            Use the standard template (<code className="text-ink">templates/prompt-sheet-template.xlsx</code>): columns{" "}
-            <code className="text-ink">test_id, category, prompt, ref_image, aspect_ratio, product, product_name, criteria, output</code>. Only{" "}
-            <code className="text-ink">prompt</code> is required. Put the images named in <code className="text-ink">ref_image</code> in one folder and select
-            them below; they&apos;re matched by file name.
+            Use the standard template: columns <code className="text-ink">test_id, category, prompt, ref_image, aspect_ratio, product, product_name, criteria, output</code>
+            . Only <code className="text-ink">prompt</code> is required. Select the images named in <code className="text-ink">ref_image</code>; they&apos;re
+            matched by file name. Imported prompts are <b className="text-ink">added</b> to the current test run.
           </>
         ) : (
           <>
@@ -464,13 +478,7 @@ function ImportDialog({ kind, onClose, onDone }: { kind: "prompts" | "products";
             "2. Choose reference images"
           )}
           <span className="text-[11px] text-faint">select all files in the images folder</span>
-          <input
-            type="file"
-            multiple
-            accept="image/*,.avif,.heic"
-            className="hidden"
-            onChange={(e) => setImages(Array.from(e.target.files ?? []))}
-          />
+          <input type="file" multiple accept="image/*,.avif,.heic" className="hidden" onChange={(e) => setImages(Array.from(e.target.files ?? []))} />
         </label>
       </div>
       {images.length > 0 && <p className="mt-2 truncate text-[11px] text-faint">{images.map((i) => i.name).join(", ")}</p>}
@@ -486,88 +494,21 @@ function ImportDialog({ kind, onClose, onDone }: { kind: "prompts" | "products";
       )}
       <label className="mt-3 flex items-center gap-2 text-sm text-muted">
         <input type="checkbox" checked={replace} onChange={(e) => setReplace(e.target.checked)} className="accent-[#8b6cff]" />
-        Replace all existing {kind}
-        {kind === "prompts" ? " and products (deletes their generations and scores)" : ""}
+        Replace all {kind} in this test run{kind === "prompts" ? " (deletes their results and votes)" : ""}
       </label>
+      {progress && <p className="mt-3 text-sm text-accent-2">{progress}</p>}
       {err && <p className="mt-2 text-sm text-bad">{err}</p>}
       <div className="mt-6 flex justify-end gap-2">
         <button onClick={onClose} className="rounded-lg px-4 py-2 text-sm text-muted hover:text-ink">
           Cancel
         </button>
         <button
-          disabled={(!sheet && !csv.trim()) || busy}
+          disabled={(!sheet && !csv.trim()) || !!progress}
           onClick={submit}
           className="flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white disabled:opacity-40"
         >
-          {busy && <Upload size={14} className="animate-pulse" />}
+          {progress && <Upload size={14} className="animate-pulse" />}
           Import
-        </button>
-      </div>
-    </Modal>
-  );
-}
-
-type ArchiveInfo = { name: string; created: string; prompts: number; generations: number; spentUsd: number };
-
-function NewRoundDialog({ onClose, onDone }: { onClose: () => void; onDone: (msg: string) => void }) {
-  const [label, setLabel] = useState("");
-  const [archives, setArchives] = useState<ArchiveInfo[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
-
-  useEffect(() => {
-    api<ArchiveInfo[]>("/api/rounds").then(setArchives).catch(() => {});
-  }, []);
-
-  const start = async () => {
-    setBusy(true);
-    setErr("");
-    try {
-      const r = await api<ArchiveInfo>("/api/rounds", { method: "POST", json: { label } });
-      onDone(
-        `Previous round archived to data/archive/${r.name} (${r.prompts} prompts, ${r.generations} generations, $${r.spentUsd.toFixed(2)}). Library is empty — import the next sheet.`,
-      );
-    } catch (e) {
-      setErr((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <Modal title="Start a new round" onClose={onClose}>
-      <p className="text-sm text-muted">
-        Everything in the current round (prompts, products, reference images, generated images, scores, costs) is moved to{" "}
-        <code className="text-ink">data/archive/</code> and the app starts empty. Model settings are kept. Nothing is deleted: the archive holds a full
-        copy of the database and every file.
-      </p>
-      <div className="mt-4">
-        <Field label="Name for the round being archived (optional)">
-          <input className={input} value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. round 1 – home decor & food" />
-        </Field>
-      </div>
-      {archives.length > 0 && (
-        <div className="mt-4">
-          <div className="mb-1 text-xs font-medium text-muted">Earlier rounds</div>
-          <ul className="max-h-36 space-y-1 overflow-y-auto text-xs text-faint">
-            {archives.map((a) => (
-              <li key={a.name} className="flex justify-between gap-3 rounded bg-panel-2 px-2 py-1">
-                <span className="truncate font-mono">{a.name}</span>
-                <span className="shrink-0">
-                  {a.prompts} prompts · {a.generations} gens · ${a.spentUsd.toFixed(2)}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-      {err && <p className="mt-3 text-sm text-bad">{err}</p>}
-      <div className="mt-6 flex justify-end gap-2">
-        <button onClick={onClose} className="rounded-lg px-4 py-2 text-sm text-muted hover:text-ink">
-          Cancel
-        </button>
-        <button onClick={start} disabled={busy} className="flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">
-          <Archive size={14} /> {busy ? "Archiving…" : "Archive and start new round"}
         </button>
       </div>
     </Modal>

@@ -18,6 +18,9 @@ type Row = {
   cost_unknown: number | null;
   outputs?: number;
   scored?: number;
+  votes?: number;
+  voters?: number;
+  rejected?: number;
   text_accuracy?: number | null;
   realism?: number | null;
   color?: number | null;
@@ -26,7 +29,8 @@ type Row = {
   overall?: number | null;
 };
 type Heat = { model_key: string; ad_category: string; overall: number | null; keep_rate: number | null; n: number };
-type Data = { rows: Row[]; heat: Heat[]; categories: string[] };
+type Voter = { model_key: string; user_id: number; name: string; overall: number | null; keep_rate: number | null; n: number };
+type Data = { rows: Row[]; heat: Heat[]; voters: Voter[]; categories: string[] };
 
 type SortKey = "overall" | "keep_rate" | "text_accuracy" | "realism" | "color" | "latency_ms" | "cost_per_image";
 
@@ -62,7 +66,9 @@ export default function LeaderboardPage() {
       <div className="flex flex-wrap items-end gap-3">
         <div>
           <h1 className="text-xl font-semibold">Leaderboard</h1>
-          <p className="text-sm text-muted">Averages of your scores (1–5) per model. Keep rate = kept ÷ (kept + rejected).</p>
+          <p className="text-sm text-muted">
+            The whole team&apos;s votes on this test run, combined: every person&apos;s vote counts once. Keep rate = keep votes ÷ (keep + reject votes).
+          </p>
         </div>
         <div className="ml-auto flex items-center gap-3 text-xs text-muted">
           <select value={cat} onChange={(e) => setCat(e.target.value)} className="rounded-md border border-line bg-panel-2 px-2 py-1.5 text-ink outline-none">
@@ -93,7 +99,7 @@ export default function LeaderboardPage() {
           <div className="ml-8 flex gap-8">
             <Stat label="Overall" value={fmtNum(leader.overall, 2)} />
             <Stat label="Keep rate" value={leader.keep_rate == null ? "—" : `${Math.round(leader.keep_rate * 100)}%`} />
-            <Stat label="Scored" value={`${leader.scored ?? 0} / ${leader.outputs ?? 0}`} />
+            <Stat label="Votes" value={`${leader.votes ?? 0} from ${leader.voters ?? 0}`} />
           </div>
         </div>
       )}
@@ -109,7 +115,9 @@ export default function LeaderboardPage() {
               <SortTh k="realism" sort={sort} setSort={setSort}>Realism</SortTh>
               <SortTh k="color" sort={sort} setSort={setSort}>Brand colour</SortTh>
               <SortTh k="keep_rate" sort={sort} setSort={setSort}>Keep rate</SortTh>
-              <th className="px-4 py-3">Scored</th>
+              <th className="px-4 py-3" title="Team votes · images with at least one vote / images">
+                Votes
+              </th>
               <th className="px-4 py-3">Success</th>
               <SortTh k="latency_ms" sort={sort} setSort={setSort}>Avg time</SortTh>
               <SortTh k="cost_per_image" sort={sort} setSort={setSort}>$ / image</SortTh>
@@ -134,7 +142,7 @@ export default function LeaderboardPage() {
                   <Bar v={r.keep_rate == null ? null : r.keep_rate * 100} max={100} suffix="%" digits={0} />
                 </td>
                 <td className="px-4 py-3 font-mono text-xs text-muted">
-                  {r.scored ?? 0}/{r.outputs ?? 0}
+                  {r.votes ?? 0} · {r.scored ?? 0}/{r.outputs ?? 0}
                 </td>
                 <td className="px-4 py-3 font-mono text-xs text-muted" title={`${r.failed} failed`}>
                   {r.gens ? Math.round((r.ok / r.gens) * 100) : 0}%
@@ -164,6 +172,8 @@ export default function LeaderboardPage() {
           </tbody>
         </table>
       </div>
+
+      {!!data?.voters.length && <ByPerson voters={data.voters} order={heatModels} labelOf={labelOf} />}
 
       {!!data?.categories.length && !!heatModels.length && (
         <div className="rounded-xl border border-line bg-panel p-5">
@@ -226,6 +236,57 @@ export default function LeaderboardPage() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/** Model × person: each team member's keep rate and average score, to see where the team agrees or splits. */
+function ByPerson({ voters, order, labelOf }: { voters: Voter[]; order: string[]; labelOf: Map<string, string> }) {
+  const people = [...new Map(voters.map((v) => [v.user_id, v.name])).entries()].sort((a, b) => a[1].localeCompare(b[1]));
+  const cell = new Map(voters.map((v) => [`${v.model_key}|${v.user_id}`, v]));
+  return (
+    <div className="rounded-xl border border-line bg-panel p-5">
+      <h2 className="font-semibold">How each person voted</h2>
+      <p className="mb-4 text-xs text-muted">Keep rate and average score per model, per team member. Large differences across a row = the team disagrees on that model.</p>
+      <div className="overflow-x-auto">
+        <table className="text-xs">
+          <thead>
+            <tr className="text-left text-faint">
+              <th className="pr-4 pb-2 font-medium">Model</th>
+              {people.map(([id, name]) => (
+                <th key={id} className="px-3 pb-2 font-medium text-muted">
+                  {name}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {order.map((mk) => (
+              <tr key={mk} className="border-t border-line/60">
+                <td className="py-2 pr-4 whitespace-nowrap text-muted">{labelOf.get(mk)}</td>
+                {people.map(([id]) => {
+                  const v = cell.get(`${mk}|${id}`);
+                  return (
+                    <td key={id} className="px-3 py-2 font-mono whitespace-nowrap">
+                      {v ? (
+                        <span title={`${v.n} vote${v.n === 1 ? "" : "s"}`}>
+                          <span className={v.keep_rate == null ? "text-faint" : v.keep_rate >= 0.5 ? "text-good" : "text-bad"}>
+                            {v.keep_rate == null ? "—" : `${Math.round(v.keep_rate * 100)}%`}
+                          </span>
+                          <span className="text-faint"> · </span>
+                          <span className="text-ink">{fmtNum(v.overall, 1)}</span>
+                        </span>
+                      ) : (
+                        <span className="text-faint">not voted</span>
+                      )}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

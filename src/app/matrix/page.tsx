@@ -23,13 +23,14 @@ type Cell = {
   local_path: string | null;
   remote_url: string | null;
   media_type: "image" | "video";
-  keep: number | null;
-  text_accuracy: number | null;
-  realism: number | null;
-  color: number | null;
-  notes: string | null;
+  votes_n: number;
+  keep_yes: number;
+  keep_no: number;
+  overall: number | null;
+  my_keep: number | null;
 };
 
+/** Votes are loaded by the viewer itself (no `votes` here), so it always shows the latest team state. */
 const toOutput = (c: Cell): Output => ({
   id: c.output_id!,
   generation_id: c.generation_id!,
@@ -37,11 +38,11 @@ const toOutput = (c: Cell): Output => ({
   local_path: c.local_path,
   remote_url: c.remote_url,
   media_type: c.media_type,
-  text_accuracy: c.text_accuracy,
-  realism: c.realism,
-  color: c.color,
-  keep: c.keep,
-  notes: c.notes,
+  text_accuracy: null,
+  realism: null,
+  color: null,
+  keep: c.my_keep,
+  notes: null,
 });
 
 export default function MatrixPage() {
@@ -127,8 +128,8 @@ export default function MatrixPage() {
         <div>
           <h1 className="text-xl font-semibold">Matrix</h1>
           <p className="text-sm text-muted">
-            Every prompt × every model, newest result. Click a result to view and score it here. The inset in a cell is the reference image that
-            generation was given.
+            Every prompt × every model, newest result. Click a result to vote on it and see the team&apos;s votes. Badges show team keep·reject; a
+            purple dot means teammates voted and you haven&apos;t. The inset is the reference image that generation was given.
           </p>
         </div>
         <div className="ml-auto flex items-center gap-3 text-xs text-muted">
@@ -234,10 +235,18 @@ export default function MatrixPage() {
                             style={{ aspectRatio: "1 / 1" }}
                           />
                         )}
-                        {c.keep != null && (
-                          <span className={`absolute right-1 bottom-1 rounded px-1 text-[9px] font-bold text-black ${c.keep ? "bg-good" : "bg-bad"}`}>
-                            {c.keep ? "KEEP" : "REJ"}
+                        {c.keep_yes + c.keep_no > 0 && (
+                          <span
+                            title={`Team: ${c.keep_yes} keep, ${c.keep_no} reject${c.overall != null ? `, avg ${Number(c.overall).toFixed(1)}` : ""}`}
+                            className={`absolute right-1 bottom-1 rounded px-1 text-[9px] font-bold text-black ${
+                              c.keep_yes > c.keep_no ? "bg-good" : c.keep_no > c.keep_yes ? "bg-bad" : "bg-warn"
+                            }`}
+                          >
+                            {c.keep_yes}·{c.keep_no}
                           </span>
+                        )}
+                        {c.votes_n > 0 && c.my_keep == null && (
+                          <span title="Teammates voted; you haven't marked keep/reject" className="absolute top-1 right-1 h-2 w-2 rounded-full bg-accent" />
                         )}
                       </>
                     ) : c && ACTIVE.has(c.status) ? (

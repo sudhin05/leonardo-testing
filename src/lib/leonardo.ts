@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import path from "node:path";
 
 const BASE = "https://cloud.leonardo.ai/api/rest";
@@ -131,9 +130,9 @@ export async function getGeneration(id: string): Promise<PollResult> {
 }
 
 /** Upload a local image via the init-image presigned flow; returns the Leonardo image id. */
-export async function uploadImage(filePath: string): Promise<string> {
-  if (isMock()) return `mock-upload-${path.basename(filePath)}`;
-  let ext = path.extname(filePath).slice(1).toLowerCase();
+export async function uploadImage(data: Buffer, fileName: string): Promise<string> {
+  if (isMock()) return `mock-upload-${path.basename(fileName)}`;
+  let ext = path.extname(fileName).slice(1).toLowerCase();
   if (!["png", "jpg", "jpeg", "webp"].includes(ext)) throw new Error(`Unsupported image type: .${ext}`);
   // normalise ".jpeg" to ".jpg" so the stored init image has the most widely accepted extension
   const mime = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : `image/${ext}`;
@@ -148,7 +147,7 @@ export async function uploadImage(filePath: string): Promise<string> {
   const fields = typeof up.fields === "string" ? (JSON.parse(up.fields) as Record<string, string>) : up.fields;
   const form = new FormData();
   for (const [k, v] of Object.entries(fields)) form.append(k, v);
-  form.append("file", new Blob([fs.readFileSync(filePath)], { type: mime }), `${path.basename(filePath, path.extname(filePath))}.${ext}`);
+  form.append("file", new Blob([new Uint8Array(data)], { type: mime }), `${path.basename(fileName, path.extname(fileName))}.${ext}`);
   const s3 = await fetch(up.url, { method: "POST", body: form });
   if (!s3.ok && s3.status !== 204) throw new Error(`Upload to storage failed: ${s3.status} ${await s3.text()}`);
   return up.id;
