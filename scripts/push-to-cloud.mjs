@@ -18,6 +18,8 @@ if (missing.length) {
   process.exit(1);
 }
 const force = process.argv.includes("--force");
+// must match the Blob store type (Vercel shows "Private" or "Public" next to the store name); the app uses the same variable
+const access = process.env.BLOB_ACCESS === "public" ? "public" : "private";
 const dataDir = process.env.LAB_DATA_DIR || path.join(process.cwd(), "data");
 const local = new DatabaseSync(path.join(dataDir, "lab.db"), { readOnly: true });
 const remote = createClient({ url: process.env.TURSO_DATABASE_URL, authToken: process.env.TURSO_AUTH_TOKEN });
@@ -77,7 +79,7 @@ for (const [folder, name] of files) {
   if (have.rows.length && !force) continue;
   const data = fs.readFileSync(file);
   const contentType = TYPES[name.split(".").pop().toLowerCase()] ?? "application/octet-stream";
-  const blob = await put(key, data, { access: "public", addRandomSuffix: false, allowOverwrite: true, contentType });
+  const blob = await put(key, data, { access, addRandomSuffix: false, allowOverwrite: true, contentType });
   await remote.execute({
     sql: "INSERT OR REPLACE INTO media (key, url, content_type, size) VALUES (?, ?, ?, ?)",
     args: [key, blob.url, contentType, data.length],

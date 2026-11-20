@@ -13,16 +13,26 @@ export default function LoginPage() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
-  useEffect(() => {
-    fetch("/api/auth/users")
-      .then((r) => r.json())
-      .then((d: { names: string[]; passwordRequired: boolean }) => {
+  const [loadErr, setLoadErr] = useState("");
+
+  // Only hide the password box when the server explicitly says none is needed; a failed lookup keeps it visible.
+  const loadUsers = () => {
+    setLoadErr("");
+    fetch("/api/auth/users", { cache: "no-store" })
+      .then(async (r) => {
+        const d = (await r.json().catch(() => ({}))) as { names?: string[]; passwordRequired?: boolean; error?: string };
+        if (!r.ok) throw new Error(d.error ?? `Server error (${r.status})`);
         setNames(d.names ?? []);
-        setNeedPassword(d.passwordRequired);
-        if (!d.names?.length) setCustom(true);
+        setNeedPassword(d.passwordRequired !== false);
+        setCustom(!d.names?.length);
       })
-      .catch(() => setCustom(true));
-  }, []);
+      .catch((e: Error) => {
+        setNeedPassword(true);
+        setCustom(true);
+        setLoadErr(`Couldn't load the team list — ${e.message}. You can still sign in by typing your name.`);
+      });
+  };
+  useEffect(loadUsers, []);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -110,6 +120,14 @@ export default function LoginPage() {
           </div>
         )}
 
+        {loadErr && (
+          <p className="text-xs text-warn">
+            {loadErr}{" "}
+            <button type="button" onClick={loadUsers} className="underline">
+              Retry
+            </button>
+          </p>
+        )}
         {err && <p className="text-sm text-bad">{err}</p>}
 
         <button

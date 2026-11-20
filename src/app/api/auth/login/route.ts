@@ -9,6 +9,7 @@ export const dynamic = "force-dynamic";
 export const POST = handle(async (req: Request) => {
   const b = (await req.json().catch(() => ({}))) as { password?: string; name?: string };
   const name = String(b.name ?? "").trim().replace(/\s+/g, " ").slice(0, 40);
+  if (process.env.TEAM_PASSWORD && !String(b.password ?? "")) return bad("Enter the team password", 401);
   if (!passwordOk(String(b.password ?? ""))) return bad("Wrong team password", 401);
   if (!name) return bad("Enter your name");
   const max = Number(process.env.TEAM_MAX_MEMBERS || 10);
