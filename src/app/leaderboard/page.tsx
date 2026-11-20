@@ -62,7 +62,7 @@ export default function LeaderboardPage() {
   const leader = rows.find((r) => r.overall != null);
 
   return (
-    <div className="mx-auto max-w-[1500px] space-y-6 p-5">
+    <div className="mx-auto max-w-[1500px] space-y-6 p-3 md:p-5">
       <div className="flex flex-wrap items-end gap-3">
         <div>
           <h1 className="text-xl font-semibold">Leaderboard</h1>
@@ -70,7 +70,7 @@ export default function LeaderboardPage() {
             The whole team&apos;s votes on this test run, combined: every person&apos;s vote counts once. Keep rate = keep votes ÷ (keep + reject votes).
           </p>
         </div>
-        <div className="ml-auto flex items-center gap-3 text-xs text-muted">
+        <div className="flex flex-wrap items-center gap-3 text-xs text-muted sm:ml-auto">
           <select value={cat} onChange={(e) => setCat(e.target.value)} className="rounded-md border border-line bg-panel-2 px-2 py-1.5 text-ink outline-none">
             <option value="">All categories</option>
             {data?.categories.map((c) => (
@@ -88,7 +88,7 @@ export default function LeaderboardPage() {
       </div>
 
       {leader && (
-        <div className="flex items-center gap-4 rounded-xl border border-line bg-panel p-5">
+        <div className="flex flex-wrap items-center gap-4 rounded-xl border border-line bg-panel p-4 md:p-5">
           <div className="grid h-12 w-12 place-items-center rounded-xl bg-accent/15 text-accent">
             <Trophy size={22} />
           </div>
@@ -96,7 +96,7 @@ export default function LeaderboardPage() {
             <div className="text-xs tracking-wider text-faint uppercase">Current leader {cat ? `· ${cat}` : ""}</div>
             <div className="text-2xl font-semibold">{leader.label}</div>
           </div>
-          <div className="ml-8 flex gap-8">
+          <div className="flex flex-wrap gap-6 md:ml-8 md:gap-8">
             <Stat label="Overall" value={fmtNum(leader.overall, 2)} />
             <Stat label="Keep rate" value={leader.keep_rate == null ? "—" : `${Math.round(leader.keep_rate * 100)}%`} />
             <Stat label="Votes" value={`${leader.votes ?? 0} from ${leader.voters ?? 0}`} />

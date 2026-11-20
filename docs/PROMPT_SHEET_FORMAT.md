@@ -2,6 +2,8 @@
 
 Use this format for every test round. Start from `templates/prompt-sheet-template.xlsx`, or the `.csv` version.
 
+`templates/prompt-sheet-example.xlsx` is a filled-in sample with 6 rows covering each kind of test: product photo, sale poster with exact text, food, logo-based poster, a text-only story and a text-only banner. It also has a **HOW TO FILL** tab. Share it with anyone writing a sheet for the first time.
+
 A test round is two things:
 1. **The sheet**, an `.xlsx` or `.csv` file with one row per prompt. The first row holds the column names below.
 2. **The images folder**, which holds every reference image the sheet names.

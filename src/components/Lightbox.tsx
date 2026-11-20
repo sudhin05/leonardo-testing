@@ -65,7 +65,7 @@ export function Lightbox({
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-black/95">
-      <div className="flex h-12 shrink-0 items-center gap-3 border-b border-white/10 px-4 text-sm">
+      <div className="flex h-12 shrink-0 items-center gap-2 border-b border-white/10 px-2 text-sm md:gap-3 md:px-4">
         {set && (
           <div className="flex rounded-md border border-white/10 p-0.5">
             <ModeBtn on={mode === "single"} onClick={() => setMode("single")} icon={<Square size={14} />} label="Single" />
@@ -80,7 +80,7 @@ export function Lightbox({
             {i + 1} / {items.length}
           </span>
         )}
-        <span className="text-xs text-faint">
+        <span className="hidden text-xs text-faint md:inline">
           Scroll to zoom · drag to pan · double-click to toggle{mode === "side" ? " · zoom is synced across panes" : ""}
         </span>
         <button onClick={onClose} className="ml-auto rounded-md p-1.5 text-muted hover:bg-white/10 hover:text-ink" title="Close (Esc)">
@@ -89,8 +89,8 @@ export function Lightbox({
       </div>
 
       {mode === "single" && cur && (
-        <div className="flex min-h-0 flex-1">
-          <div className="relative min-w-0 flex-1 p-4">
+        <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+          <div className="relative min-h-[45vh] min-w-0 flex-1 p-2 md:p-4">
             <div className="relative h-full w-full">
               <ZoomPane
                 key={keyOf(cur) + (showRef ? "-ref" : "")}
@@ -110,7 +110,7 @@ export function Lightbox({
               </>
             )}
           </div>
-          <aside className="w-72 shrink-0 space-y-4 overflow-y-auto border-l border-white/10 bg-panel p-4">
+          <aside className="max-h-[48vh] w-full shrink-0 space-y-4 overflow-y-auto border-t border-white/10 bg-panel p-4 md:max-h-none md:w-72 md:border-t-0 md:border-l">
             <div>
               <div className="font-semibold">{cur.title}</div>
               {cur.subtitle && <div className="mt-0.5 text-xs text-muted">{cur.subtitle}</div>}
@@ -174,7 +174,7 @@ function NavBtn({ side, onClick }: { side: "left" | "right"; onClick: () => void
   return (
     <button
       onClick={onClick}
-      className={`absolute top-1/2 z-10 -translate-y-1/2 ${side === "left" ? "left-6" : "right-6"} rounded-full bg-white/10 p-2 text-ink backdrop-blur hover:bg-white/20`}
+      className={`absolute top-1/2 z-10 -translate-y-1/2 ${side === "left" ? "left-3 md:left-6" : "right-3 md:right-6"} rounded-full bg-white/10 p-2 text-ink backdrop-blur hover:bg-white/20`}
     >
       {side === "left" ? <ChevronLeft size={22} /> : <ChevronRight size={22} />}
     </button>
@@ -211,7 +211,7 @@ function SideBySide({ items }: { items: LightItem[] }) {
               {it.subtitle && <div className="truncate text-[11px] text-muted">{it.subtitle}</div>}
             </div>
             {it.output && (
-              <div className="w-48 shrink-0">
+              <div className="hidden w-48 shrink-0 sm:block">
                 <ScoreControls output={it.output} compact />
               </div>
             )}

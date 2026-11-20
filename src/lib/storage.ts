@@ -13,7 +13,12 @@ import { all, get, run, MEDIA_DIR, UPLOAD_DIR } from "./db";
  */
 
 export type Folder = "media" | "uploads";
-export const USE_BLOB = !!process.env.BLOB_READ_WRITE_TOKEN;
+/**
+ * Blob is on when the project has a store: either a read-write token, or (newer Vercel store connections)
+ * BLOB_STORE_ID with Vercel's automatic OIDC token — @vercel/blob picks up either by itself.
+ */
+export const USE_BLOB = !!(process.env.BLOB_READ_WRITE_TOKEN || process.env.BLOB_STORE_ID);
+export const STORAGE_MODE = USE_BLOB ? (process.env.BLOB_READ_WRITE_TOKEN ? "blob (token)" : "blob (oidc)") : "local disk";
 export const BLOB_ACCESS: "public" | "private" = process.env.BLOB_ACCESS === "public" ? "public" : "private";
 
 const dirOf = (f: Folder) => (f === "media" ? MEDIA_DIR : UPLOAD_DIR);

@@ -123,7 +123,7 @@ export default function MatrixPage() {
   };
 
   return (
-    <div className="p-5">
+    <div className="p-3 md:p-5">
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <div>
           <h1 className="text-xl font-semibold">Matrix</h1>
@@ -132,7 +132,7 @@ export default function MatrixPage() {
             purple dot means teammates voted and you haven&apos;t. The inset is the reference image that generation was given.
           </p>
         </div>
-        <div className="ml-auto flex items-center gap-3 text-xs text-muted">
+        <div className="flex flex-wrap items-center gap-3 text-xs text-muted sm:ml-auto">
           <select value={cat} onChange={(e) => setCat(e.target.value)} className="rounded-md border border-line bg-panel-2 px-2 py-1.5 text-ink outline-none">
             <option value="">All categories</option>
             {categories.map((c) => (
@@ -160,7 +160,7 @@ export default function MatrixPage() {
         <table className="border-separate border-spacing-0">
           <thead>
             <tr>
-              <th className="sticky top-0 left-0 z-20 min-w-64 border-r border-b border-line bg-panel px-3 py-2 text-left text-xs font-semibold text-faint">
+              <th className="sticky top-0 left-0 z-20 min-w-40 border-r border-b border-line bg-panel px-3 py-2 text-left text-xs font-semibold text-faint sm:min-w-64">
                 Prompt
               </th>
               <th className="sticky top-0 z-10 border-r border-b border-line bg-panel px-2 py-2 text-left text-xs font-semibold text-faint">Reference</th>
@@ -190,7 +190,7 @@ export default function MatrixPage() {
                       {p.input_mode === "reference" && <span className="text-[10px] text-warn">Image → Image</span>}
                     </div>
                     <div className="mt-1 text-xs font-medium">{p.ad_category}</div>
-                    <p className="mt-0.5 line-clamp-3 max-w-60 text-[11px] text-muted">{p.prompt}</p>
+                    <p className="mt-0.5 line-clamp-3 max-w-40 text-[11px] text-muted sm:max-w-60">{p.prompt}</p>
                   </td>
                   <td className="border-r border-b border-line p-2 align-top">
                     {ref ? (

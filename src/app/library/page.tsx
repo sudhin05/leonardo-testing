@@ -68,7 +68,7 @@ export default function LibraryPage() {
   };
 
   return (
-    <div className="mx-auto max-w-[1400px] space-y-5 p-5">
+    <div className="mx-auto max-w-[1400px] space-y-5 p-3 md:p-5">
       <div className="flex flex-wrap items-end gap-3">
         <div>
           <h1 className="text-xl font-semibold">Library</h1>
@@ -99,7 +99,7 @@ export default function LibraryPage() {
         </div>
       )}
 
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         <button
           onClick={() =>
             tab === "prompts"
@@ -126,8 +126,8 @@ export default function LibraryPage() {
       </div>
 
       {tab === "prompts" ? (
-        <div className="overflow-hidden rounded-xl border border-line bg-panel">
-          <table className="w-full text-sm">
+        <div className="overflow-x-auto rounded-xl border border-line bg-panel">
+          <table className="w-full min-w-[720px] text-sm">
             <thead>
               <tr className="border-b border-line text-left text-[11px] tracking-wider text-faint uppercase">
                 <th className="px-4 py-3">Test</th>
@@ -182,7 +182,7 @@ export default function LibraryPage() {
           </table>
         </div>
       ) : (
-        <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-4">
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(min(300px,100%),1fr))] gap-4">
           {products.map((p) => (
             <div key={p.id} className="flex gap-3 rounded-xl border border-line bg-panel p-3">
               <label className="checker relative h-28 w-28 shrink-0 cursor-pointer overflow-hidden rounded-lg border border-dashed border-line-2 hover:border-accent">
@@ -225,7 +225,7 @@ export default function LibraryPage() {
                 </div>
                 <div className="mt-1 text-sm font-medium leading-snug">{p.name}</div>
                 <div className="text-xs text-faint">{p.category}</div>
-                {p.notes && <p className="mt-1 line-clamp-2 text-xs text-muted">{p.notes}</p>}
+                {p.notes && <p className="mt-1 line-clamp-2 text-xs [overflow-wrap:anywhere] text-muted">{p.notes}</p>}
               </div>
             </div>
           ))}

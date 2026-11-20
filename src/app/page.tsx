@@ -12,6 +12,7 @@ import {
   Search,
   Target,
   Upload,
+  List as ListIcon,
   Wand2,
   X,
 } from "lucide-react";
@@ -45,6 +46,8 @@ export default function ComparePage() {
   const [toast, setToast] = useState<{ text: string; tone: "ok" | "warn" } | null>(null);
   const [sel, setSel] = useState<Map<number, LightItem>>(new Map());
   const [withRef, setWithRef] = useState(true);
+  const [showList, setShowList] = useState(false); // phones: prompt list drawer
+  const [fullPrompt, setFullPrompt] = useState(false); // phones: long prompts start collapsed
   const [lb, setLb] = useState<{ items: LightItem[]; start: number; compare?: LightItem[] } | null>(null);
   const [confirm, setConfirm] = useState<{ scope: Scope; promptIds: number[]; calls: number } | null>(null);
   const kickRef = useRef(0);
@@ -269,12 +272,24 @@ export default function ComparePage() {
   const refItem: LightItem | null =
     prompt && refImg ? { src: uploadSrc(refImg), title: "Reference image", subtitle: `${prompt.test_id} · input sent to the models` } : null;
   const compareSet = [...(withRef && refItem ? [refItem] : []), ...sel.values()];
-  const gridStyle = { gridTemplateColumns: `repeat(auto-fill, minmax(${cardW}px, 1fr))` };
+  // min(…, 100%) so a wide card setting never overflows a phone screen
+  const gridStyle = { gridTemplateColumns: `repeat(auto-fill, minmax(min(${cardW}px, 100%), 1fr))` };
 
   return (
-    <div className="flex h-[calc(100vh-56px)]">
-      {/* ── Prompt sidebar ── */}
-      <aside className="flex w-80 shrink-0 flex-col border-r border-line bg-panel/50">
+    <div className="md:flex md:h-[calc(100vh-56px)]">
+      {/* ── Prompt sidebar: fixed column on desktop, slide-out drawer on phones ── */}
+      {showList && <div className="fixed inset-0 z-40 bg-black/60 md:hidden" onClick={() => setShowList(false)} />}
+      <aside
+        className={`fixed inset-y-0 left-0 z-50 flex w-[85vw] max-w-80 flex-col border-r border-line bg-panel transition-transform md:static md:z-auto md:w-80 md:max-w-none md:translate-x-0 md:bg-panel/50 ${
+          showList ? "translate-x-0" : "-translate-x-full"
+        }`}
+      >
+        <div className="flex items-center justify-between px-4 pt-3 md:hidden">
+          <span className="text-sm font-semibold">Prompts ({prompts.length})</span>
+          <button onClick={() => setShowList(false)} className="rounded-md p-1.5 text-muted hover:text-ink" aria-label="Close prompt list">
+            <X size={18} />
+          </button>
+        </div>
         <div className="p-3">
           <div className="flex items-center gap-2 rounded-lg border border-line bg-panel-2 px-2.5 focus-within:border-accent/60">
             <Search size={14} className="text-faint" />
@@ -293,7 +308,10 @@ export default function ComparePage() {
               {list.map((p) => (
                 <button
                   key={p.id}
-                  onClick={() => setPid(p.id)}
+                  onClick={() => {
+                    setPid(p.id);
+                    setShowList(false);
+                  }}
                   className={`mb-0.5 w-full rounded-lg px-2.5 py-2 text-left transition ${
                     p.id === pid ? "bg-panel-3 ring-1 ring-line-2" : "hover:bg-panel-2"
                   }`}
@@ -333,11 +351,21 @@ export default function ComparePage() {
       </aside>
 
       {/* ── Main ── */}
-      <section className="min-w-0 flex-1 overflow-y-auto">
+      <section className="min-w-0 md:flex-1 md:overflow-y-auto">
         {prompt ? (
-          <div className="mx-auto max-w-[1800px] space-y-5 p-5">
+          <div className="mx-auto max-w-[1800px] space-y-4 p-3 md:space-y-5 md:p-5">
+            {/* phones: open the prompt list */}
+            <button
+              onClick={() => setShowList(true)}
+              className="flex w-full items-center gap-2 rounded-xl border border-line bg-panel px-3 py-2.5 text-left text-sm md:hidden"
+            >
+              <ListIcon size={16} className="text-accent" />
+              <span className="font-mono text-xs font-semibold text-accent-2">{prompt.test_id}</span>
+              <span className="truncate text-muted">{prompt.ad_category}</span>
+              <span className="ml-auto shrink-0 text-xs text-faint">All prompts ({prompts.length})</span>
+            </button>
             {/* Prompt header */}
-            <div className="rounded-xl border border-line bg-panel p-5">
+            <div className="rounded-xl border border-line bg-panel p-4 md:p-5">
               <div className="flex flex-wrap items-center gap-2 text-xs">
                 <span className="rounded-md bg-accent/15 px-2 py-0.5 font-mono font-semibold text-accent-2">{prompt.test_id}</span>
                 <span className="font-medium text-ink">{prompt.ad_category}</span>
@@ -346,7 +374,7 @@ export default function ComparePage() {
                     · <span className="font-mono">{prompt.sku}</span> {prompt.product_name}
                   </span>
                 )}
-                <span className="ml-auto flex items-center gap-2">
+                <span className="flex w-full items-center gap-2 sm:ml-auto sm:w-auto">
                   <Badge>{prompt.aspect_ratio}</Badge>
                   <Badge tone={prompt.input_mode === "reference" ? "warn" : undefined}>
                     {prompt.input_mode === "reference" ? "Image → Image" : "Text → " + (prompt.kind === "video" ? "Video" : "Image")}
@@ -356,9 +384,12 @@ export default function ComparePage() {
                   </Link>
                 </span>
               </div>
-              <div className="mt-3 flex gap-5">
+              <div className="mt-3 flex flex-col gap-4 sm:flex-row sm:gap-5">
                 <div className="min-w-0 flex-1 space-y-3">
-                  <p className="text-[15px] leading-relaxed text-ink/90">{prompt.prompt}</p>
+                  <p className={`text-sm leading-relaxed text-ink/90 md:line-clamp-none md:text-[15px] ${fullPrompt ? "" : "line-clamp-4"}`}>{prompt.prompt}</p>
+                  <button onClick={() => setFullPrompt((v) => !v)} className="-mt-1 text-xs text-accent md:hidden">
+                    {fullPrompt ? "Show less" : "Show full prompt"}
+                  </button>
                   {prompt.criteria && (
                     <div className="flex gap-2 rounded-lg border border-line bg-panel-2 px-3 py-2 text-sm">
                       <Target size={15} className="mt-0.5 shrink-0 text-accent" />
@@ -370,7 +401,7 @@ export default function ComparePage() {
                   )}
                 </div>
                 {prompt.input_mode === "reference" && (
-                  <div className="w-36 shrink-0">
+                  <div className="w-36 shrink-0 self-center sm:self-auto">
                     <div className="mb-1 text-[10px] font-semibold tracking-wider text-faint uppercase">Reference</div>
                     {refImg ? (
                       <button
@@ -472,7 +503,7 @@ export default function ComparePage() {
                     ))}
                   </select>
                 </label>
-                <div className="ml-auto flex items-center gap-2">
+                <div className="flex w-full flex-wrap items-center gap-2 sm:ml-auto sm:w-auto">
                   <button
                     onClick={() => askRun("category")}
                     disabled={busy}
@@ -509,7 +540,7 @@ export default function ComparePage() {
                   All runs ({runs.length})
                 </Seg>
               </div>
-              <label className="ml-auto flex items-center gap-2 text-xs text-muted">
+              <label className="ml-auto hidden items-center gap-2 text-xs text-muted sm:flex">
                 Card size
                 <input
                   type="range"
@@ -577,7 +608,7 @@ export default function ComparePage() {
             )}
           </div>
         ) : (
-          <div className="grid h-full place-items-center text-muted">
+          <div className="grid h-full min-h-[60vh] place-items-center text-muted">
             {loaded && !prompts.length ? (
               <div className="max-w-sm space-y-3 text-center text-sm">
                 <p>This test run has no prompts yet.</p>
@@ -599,7 +630,7 @@ export default function ComparePage() {
 
       {/* Compare tray */}
       {sel.size > 0 && (
-        <div className="fixed bottom-5 left-1/2 z-40 flex -translate-x-1/2 items-center gap-3 rounded-2xl border border-line-2 bg-panel-2/95 p-2 pl-3 shadow-2xl backdrop-blur">
+        <div className="fixed bottom-3 left-1/2 z-40 flex w-max max-w-[calc(100vw-1.5rem)] -translate-x-1/2 flex-wrap items-center gap-2 rounded-2xl sm:bottom-5 sm:gap-3 border border-line-2 bg-panel-2/95 p-2 pl-3 shadow-2xl backdrop-blur">
           <div className="flex -space-x-2">
             {compareSet.map((it) => (
               // eslint-disable-next-line @next/next/no-img-element

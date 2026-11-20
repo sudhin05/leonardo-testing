@@ -38,7 +38,7 @@ export default function ModelsPage() {
   };
 
   return (
-    <div className="mx-auto max-w-[1200px] space-y-6 p-5">
+    <div className="mx-auto max-w-[1200px] space-y-6 p-3 md:p-5">
       <div>
         <h1 className="text-xl font-semibold">Models</h1>
         <p className="text-sm text-muted">
@@ -64,7 +64,7 @@ export default function ModelsPage() {
                   <div className="flex items-center gap-4 px-4 py-3">
                     <Toggle on={m.enabled} onChange={(v) => patch(m.key, { enabled: v })} />
                     <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <span className="font-medium">{m.label}</span>
                         <span className="text-xs text-faint">{m.vendor}</span>
                         <code className="rounded bg-panel-3 px-1.5 py-0.5 text-[11px] text-muted">{m.key}</code>
@@ -133,12 +133,12 @@ export default function ModelsPage() {
         <p className="mt-0.5 text-xs text-muted">
           For any Leonardo v2 model not listed above (e.g. <code>krea/krea-3</code>, <code>kling-4.0</code>). It uses generic sizing; tune with overrides.
         </p>
-        <div className="mt-3 flex gap-2">
+        <div className="mt-3 flex flex-wrap gap-2">
           <input
             value={newKey}
             onChange={(e) => setNewKey(e.target.value)}
             placeholder="model string"
-            className="flex-1 rounded-lg border border-line bg-panel-2 px-3 py-2 font-mono text-sm outline-none focus:border-accent/60"
+            className="min-w-0 flex-1 rounded-lg border border-line bg-panel-2 px-3 py-2 font-mono text-sm outline-none focus:border-accent/60"
           />
           <select value={newKind} onChange={(e) => setNewKind(e.target.value as "image" | "video")} className="rounded-lg border border-line bg-panel-2 px-3 text-sm">
             <option value="image">Image</option>

@@ -27,7 +27,7 @@ export default function RunsPage() {
   }, [load]);
 
   return (
-    <div className="mx-auto max-w-5xl space-y-5 p-5">
+    <div className="mx-auto max-w-5xl space-y-5 p-3 md:p-5">
       <div className="flex flex-wrap items-end gap-3">
         <div>
           <h1 className="text-xl font-semibold">Test runs</h1>
@@ -36,7 +36,7 @@ export default function RunsPage() {
             revisit. Switching only changes what <i>you</i> see.
           </p>
         </div>
-        <button onClick={() => setCreating(true)} className="ml-auto flex items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-sm font-semibold text-white">
+        <button onClick={() => setCreating(true)} className="flex items-center gap-1.5 sm:ml-auto rounded-lg bg-accent px-3 py-2 text-sm font-semibold text-white">
           <Plus size={15} /> New test run
         </button>
       </div>
@@ -56,27 +56,27 @@ export default function RunsPage() {
         {runs?.map((r) => (
           <div
             key={r.id}
-            className={`flex flex-wrap items-center gap-4 rounded-xl border bg-panel p-4 ${r.id === current ? "border-accent/50" : "border-line"}`}
+            className={`flex min-w-0 flex-wrap items-center gap-4 rounded-xl border bg-panel p-4 ${r.id === current ? "border-accent/50" : "border-line"}`}
           >
             <FolderOpen size={20} className={r.id === current ? "text-accent" : "text-faint"} />
-            <div className="min-w-0 flex-1">
+            <div className="min-w-0 flex-1 basis-[calc(100%-3rem)] sm:basis-auto">
               <div className="flex items-center gap-2">
                 <span className="truncate font-semibold">{r.name}</span>
                 {r.id === current && <span className="rounded bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold text-accent-2">VIEWING</span>}
               </div>
-              <div className="mt-0.5 text-xs text-faint">
+              <div className="mt-0.5 text-xs [overflow-wrap:anywhere] text-faint">
                 Created {when(r.created_at)}
                 {r.created_by_name ? ` by ${r.created_by_name}` : ""} · last generation {when(r.last_activity)}
               </div>
-              {r.notes && <p className="mt-1 line-clamp-2 text-xs text-muted">{r.notes}</p>}
+              {r.notes && <p className="mt-1 line-clamp-2 text-xs [overflow-wrap:anywhere] text-muted">{r.notes}</p>}
             </div>
-            <div className="flex gap-5 text-center text-xs">
+            <div className="flex w-full justify-between gap-3 text-center text-xs sm:w-auto sm:justify-start sm:gap-5">
               <Stat label="Prompts" v={r.prompts} />
               <Stat label="Images" v={r.outputs} />
               <Stat label="Votes" v={r.votes} />
               <Stat label="Spent" v={fmtUsd(r.spent, 2)} />
             </div>
-            <div className="flex items-center gap-1">
+            <div className="ml-auto flex items-center gap-1">
               <button onClick={() => setRenaming(r)} title="Rename" className="rounded-md p-2 text-muted hover:bg-panel-3 hover:text-ink">
                 <Pencil size={14} />
               </button>

@@ -7,6 +7,8 @@ import { Check, ChevronDown, Coins, FlaskConical, FolderOpen, Loader2, LogOut, P
 import { api, fmtUsd, initials, type TestRun } from "@/lib/client";
 
 type Status = {
+  setupProblems?: string[];
+  storage?: string;
   user: { id: number; name: string };
   run: { id: number; name: string } | null;
   mock: boolean;
@@ -75,19 +77,19 @@ export function Nav() {
 
   return (
     <header className="sticky top-0 z-40 border-b border-line bg-bg/85 backdrop-blur">
-      <div className="flex h-14 items-center gap-4 px-5">
-        <Link href="/" className="flex items-center gap-2 font-semibold tracking-tight">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2 md:h-14 md:flex-nowrap md:gap-4 md:px-5 md:py-0">
+        <Link href="/" className="flex shrink-0 items-center gap-2 font-semibold tracking-tight">
           <span className="grid h-7 w-7 place-items-center rounded-lg bg-accent/15 text-accent">
             <FlaskConical size={16} />
           </span>
-          Model Lab
+          <span className="hidden sm:inline">Model Lab</span>
         </Link>
 
         {/* test run switcher */}
-        <div ref={menu} className="relative">
+        <div ref={menu} className="relative min-w-0">
           <button
             onClick={() => setOpen((v) => !v)}
-            className="flex max-w-64 items-center gap-2 rounded-lg border border-line bg-panel px-2.5 py-1.5 text-sm hover:border-line-2"
+            className="flex max-w-[56vw] items-center gap-2 rounded-lg border border-line bg-panel px-2.5 py-1.5 text-sm hover:border-line-2 md:max-w-64"
             title="Switch test run"
           >
             <FolderOpen size={14} className="shrink-0 text-accent" />
@@ -95,7 +97,7 @@ export function Nav() {
             <ChevronDown size={14} className="shrink-0 text-faint" />
           </button>
           {open && (
-            <div className="absolute top-full left-0 z-50 mt-1.5 w-80 overflow-hidden rounded-xl border border-line-2 bg-panel-2 shadow-2xl">
+            <div className="absolute top-full left-0 z-50 mt-1.5 w-[min(20rem,calc(100vw-1.5rem))] overflow-hidden rounded-xl border border-line-2 bg-panel-2 shadow-2xl">
               <div className="max-h-80 overflow-y-auto p-1.5">
                 {runs === null && <div className="p-3 text-xs text-muted">Loading…</div>}
                 {runs?.length === 0 && <div className="p-3 text-xs text-muted">No test runs yet.</div>}
@@ -128,7 +130,7 @@ export function Nav() {
           )}
         </div>
 
-        <nav className="flex items-center gap-1 text-sm">
+        <nav className="order-last -mx-1 flex w-full items-center gap-1 overflow-x-auto text-sm whitespace-nowrap md:order-none md:mx-0 md:w-auto md:overflow-visible">
           {LINKS.map((l) => {
             const on = l.href === "/" ? path === "/" : path.startsWith(l.href);
             return (
@@ -139,11 +141,11 @@ export function Nav() {
           })}
         </nav>
 
-        <div className="ml-auto flex items-center gap-2.5 text-xs">
+        <div className="ml-auto flex shrink-0 items-center gap-1.5 text-xs md:gap-2.5">
           {s && s.active > 0 && (
             <span className="flex items-center gap-1.5 rounded-full border border-line bg-panel px-2.5 py-1 text-muted">
               <Loader2 size={12} className="animate-spin text-accent" />
-              {s.active} generating
+              {s.active}<span className="hidden sm:inline"> generating</span>
             </span>
           )}
           {s && !s.mock && (
@@ -172,7 +174,7 @@ export function Nav() {
           {s && (
             <span
               title={s.mock ? "No LEONARDO_API_KEY (or LEONARDO_MOCK=1) — generations are simulated placeholders" : "Calling the live Leonardo API"}
-              className={`rounded-full px-2.5 py-1 font-medium ${s.mock ? "bg-warn/15 text-warn" : "bg-good/15 text-good"}`}
+              className={`hidden rounded-full px-2.5 py-1 font-medium sm:inline ${s.mock ? "bg-warn/15 text-warn" : "bg-good/15 text-good"}`}
             >
               {s.mock ? "MOCK" : "LIVE"}
             </span>
@@ -184,12 +186,17 @@ export function Nav() {
               className="group flex items-center gap-1.5 rounded-full border border-line bg-panel py-0.5 pr-2 pl-0.5 text-muted hover:text-ink"
             >
               <span className="grid h-6 w-6 place-items-center rounded-full bg-accent/20 text-[10px] font-bold text-accent-2">{initials(s.user.name)}</span>
-              <span className="max-w-24 truncate">{s.user.name}</span>
+              <span className="hidden max-w-24 truncate sm:inline">{s.user.name}</span>
               <LogOut size={12} className="text-faint group-hover:text-ink" />
             </button>
           )}
         </div>
       </div>
+      {!!s?.setupProblems?.length && (
+        <div className="border-t border-bad/40 bg-bad/10 px-5 py-2 text-xs text-bad">
+          Setup problem: {s.setupProblems.join(" · ")}. Fix it in Vercel → Settings → Environment Variables (or Storage → connect), then redeploy.
+        </div>
+      )}
     </header>
   );
 }

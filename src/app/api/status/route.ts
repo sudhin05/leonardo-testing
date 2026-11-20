@@ -1,5 +1,6 @@
 import { after } from "next/server";
-import { get } from "@/lib/db";
+import { IS_REMOTE_DB, get } from "@/lib/db";
+import { STORAGE_MODE, USE_BLOB } from "@/lib/storage";
 import { CREDITS_PER_USD, isMock } from "@/lib/leonardo";
 import { currentRunId, handle, me, ok } from "@/lib/server";
 import { activeCount, cachedBalance, tick } from "@/lib/worker";
@@ -28,7 +29,15 @@ export const GET = handle(async () => {
         [runId],
       )
     : undefined;
+  // a hosted deployment must use cloud storage + database; local disk there is read-only and wiped on each deploy
+  const hosted = !!process.env.VERCEL;
+  const setupProblems = [
+    hosted && !USE_BLOB ? "Image storage isn't connected (no BLOB_READ_WRITE_TOKEN or BLOB_STORE_ID) — images can't be saved or shown" : "",
+    hosted && !IS_REMOTE_DB ? "Database isn't connected (no TURSO_DATABASE_URL)" : "",
+  ].filter(Boolean);
   return ok({
+    setupProblems,
+    storage: STORAGE_MODE,
     user: { id: user.uid, name: user.name },
     run: run ?? null,
     mock: isMock(),
