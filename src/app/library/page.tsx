@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { FileUp, ImagePlus, Pencil, Plus, Trash2, Upload, X } from "lucide-react";
+import { Archive, FileUp, ImagePlus, Pencil, Plus, Trash2, Upload, X } from "lucide-react";
 import { api, uploadSrc, type Product, type Prompt } from "@/lib/client";
 
 const ARS = ["1:1", "4:5", "9:16", "16:9", "2:3", "3:2", "3:4", "4:3"];
@@ -16,6 +16,7 @@ export default function LibraryPage() {
   const [editProduct, setEditProduct] = useState<Partial<Product> | null>(null);
   const [importing, setImporting] = useState<"prompts" | "products" | null>(null);
   const [msg, setMsg] = useState("");
+  const [newRound, setNewRound] = useState(false);
 
   const load = useCallback(async () => {
     const [p, pr] = await Promise.all([api<Prompt[]>("/api/prompts"), api<Product[]>("/api/products")]);
@@ -109,7 +110,14 @@ export default function LibraryPage() {
           onClick={() => setImporting(tab)}
           className="flex items-center gap-1.5 rounded-lg border border-line px-3 py-2 text-sm text-muted hover:border-line-2 hover:text-ink"
         >
-          <FileUp size={15} /> Import CSV
+          <FileUp size={15} /> Import sheet
+        </button>
+        <button
+          onClick={() => setNewRound(true)}
+          title="Archive everything from the current round and start empty"
+          className="ml-auto flex items-center gap-1.5 rounded-lg border border-line px-3 py-2 text-sm text-muted hover:border-line-2 hover:text-ink"
+        >
+          <Archive size={15} /> New round
         </button>
       </div>
 
@@ -228,6 +236,16 @@ export default function LibraryPage() {
           onClose={() => setImporting(null)}
           onDone={(m) => {
             setImporting(null);
+            setMsg(m);
+            void load();
+          }}
+        />
+      )}
+      {newRound && (
+        <NewRoundDialog
+          onClose={() => setNewRound(false)}
+          onDone={(m) => {
+            setNewRound(false);
             setMsg(m);
             void load();
           }}
@@ -483,6 +501,73 @@ function ImportDialog({ kind, onClose, onDone }: { kind: "prompts" | "products";
         >
           {busy && <Upload size={14} className="animate-pulse" />}
           Import
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+type ArchiveInfo = { name: string; created: string; prompts: number; generations: number; spentUsd: number };
+
+function NewRoundDialog({ onClose, onDone }: { onClose: () => void; onDone: (msg: string) => void }) {
+  const [label, setLabel] = useState("");
+  const [archives, setArchives] = useState<ArchiveInfo[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    api<ArchiveInfo[]>("/api/rounds").then(setArchives).catch(() => {});
+  }, []);
+
+  const start = async () => {
+    setBusy(true);
+    setErr("");
+    try {
+      const r = await api<ArchiveInfo>("/api/rounds", { method: "POST", json: { label } });
+      onDone(
+        `Previous round archived to data/archive/${r.name} (${r.prompts} prompts, ${r.generations} generations, $${r.spentUsd.toFixed(2)}). Library is empty — import the next sheet.`,
+      );
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title="Start a new round" onClose={onClose}>
+      <p className="text-sm text-muted">
+        Everything in the current round (prompts, products, reference images, generated images, scores, costs) is moved to{" "}
+        <code className="text-ink">data/archive/</code> and the app starts empty. Model settings are kept. Nothing is deleted: the archive holds a full
+        copy of the database and every file.
+      </p>
+      <div className="mt-4">
+        <Field label="Name for the round being archived (optional)">
+          <input className={input} value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. round 1 – home decor & food" />
+        </Field>
+      </div>
+      {archives.length > 0 && (
+        <div className="mt-4">
+          <div className="mb-1 text-xs font-medium text-muted">Earlier rounds</div>
+          <ul className="max-h-36 space-y-1 overflow-y-auto text-xs text-faint">
+            {archives.map((a) => (
+              <li key={a.name} className="flex justify-between gap-3 rounded bg-panel-2 px-2 py-1">
+                <span className="truncate font-mono">{a.name}</span>
+                <span className="shrink-0">
+                  {a.prompts} prompts · {a.generations} gens · ${a.spentUsd.toFixed(2)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {err && <p className="mt-3 text-sm text-bad">{err}</p>}
+      <div className="mt-6 flex justify-end gap-2">
+        <button onClick={onClose} className="rounded-lg px-4 py-2 text-sm text-muted hover:text-ink">
+          Cancel
+        </button>
+        <button onClick={start} disabled={busy} className="flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">
+          <Archive size={14} /> {busy ? "Archiving…" : "Archive and start new round"}
         </button>
       </div>
     </Modal>
